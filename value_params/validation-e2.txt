@@ -1,0 +1,28 @@
+players=e2,e2 num=200 seed=31337 params=baseline ranks 1-10 (303.0 s)
+rank mazo                                     real     sim    dif
+   1 mega-lucario-ex-b3-lucario-a2             47.0%  63.4%   16.4
+   2 mega-altaria-ex-b1-espeon-b3a             53.2%  43.0%  -10.2
+   3 butterfree-b3b-mega-sceptile-ex-b3        50.4%  60.4%   10.0
+   4 suicune-ex-a4a-baxcalibur-b2a             47.9%  48.9%    1.0
+   5 vespiquen-ex-b4-shuckle-ex-a4             51.9%  41.4%  -10.5
+   6 dragonair-mega-rayquaza-ex-b4             49.7%  34.7%  -15.0
+   7 hydreigon-mega-absol-ex-b1                45.6%  47.3%    1.7
+   8 hoopa-ex-b4-mega-absol-ex-b1              51.3%  48.9%   -2.4
+   9 magnezone-b1a-miraidon-ex-b3a             49.1%  55.9%    6.8
+  10 mega-blaziken-ex-b1                       53.8%  56.1%    2.4
+matchups (n=45): pearson 0.443  spearman 0.418  MAE 13.1pp  empates 0.1%
+ranking por mazo: pearson -0.187  spearman -0.188  MAE 7.6pp
+players=e2,e2 num=200 seed=31337 params=C:\Users\cfdie\Programming\Proyectos\activos\deckgym-core\value_params\best.json ranks 1-10 (261.6 s)
+rank mazo                                     real     sim    dif
+   1 mega-lucario-ex-b3-lucario-a2             47.0%  63.3%   16.3
+   2 mega-altaria-ex-b1-espeon-b3a             53.2%  42.6%  -10.7
+   3 butterfree-b3b-mega-sceptile-ex-b3        50.4%  56.4%    5.9
+   4 suicune-ex-a4a-baxcalibur-b2a             47.9%  53.0%    5.1
+   5 vespiquen-ex-b4-shuckle-ex-a4             51.9%  44.3%   -7.6
+   6 dragonair-mega-rayquaza-ex-b4             49.7%  31.6%  -18.1
+   7 hydreigon-mega-absol-ex-b1                45.6%  54.8%    9.2
+   8 hoopa-ex-b4-mega-absol-ex-b1              51.3%  46.8%   -4.5
+   9 magnezone-b1a-miraidon-ex-b3a             49.1%  51.0%    1.9
+  10 mega-blaziken-ex-b1                       53.8%  56.3%    2.5
+matchups (n=45): pearson 0.376  spearman 0.343  MAE 13.9pp  empates 0.0%
+ranking por mazo: pearson -0.353  spearman -0.345  MAE 8.2pp

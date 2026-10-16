@@ -1,0 +1,23 @@
+{
+  "points": 10000,
+  "pokemon_value": 1,
+  "hand_size": 0,
+  "deck_size": 1,
+  "active_retreat_cost": 1,
+  "active_pokemon_online_score": 500,
+  "active_safety": 1,
+  "active_has_tool": 2.5,
+  "is_winner": 100000,
+  "turns_until_opponent_wins": 0,
+  "online_pokemon_count": 0,
+  "energy_distance_to_online": 0,
+  "opponent_discard_size": 0.1,
+  "active_damage": 0,
+  "bench_hp": 0.25,
+  "bench_count": 400,
+  "evolution_stage": 200,
+  "evolutions_in_hand": 0,
+  "active_status": 0,
+  "can_ko_active": 125,
+  "attached_energy": 0
+}
