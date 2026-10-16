@@ -3,7 +3,10 @@
 // Each value function evaluates a game state from a player's perspective
 // and returns a score (higher is better for that player)
 
+use std::sync::OnceLock;
+
 use log::trace;
+use serde::{Deserialize, Serialize};
 
 use crate::card_logic::get_highest_evolutions;
 use crate::hooks::energy_missing;
@@ -11,8 +14,14 @@ use crate::models::{Card, EnergyType, PlayedCard};
 use crate::state::GameOutcome;
 use crate::State;
 
+/// Environment variable with the path to a JSON file of [`ValueFunctionParams`]. When set, the
+/// `e<depth>` and `v` players use those coefficients instead of [`ValueFunctionParams::baseline`].
+/// Fields missing from the JSON keep their baseline value; unknown fields are an error.
+pub const VALUE_PARAMS_ENV: &str = "DECKGYM_VALUE_PARAMS";
+
 /// Coefficients for the parametric value function
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ValueFunctionParams {
     pub points: f64,
     pub pokemon_value: f64,
@@ -27,6 +36,30 @@ pub struct ValueFunctionParams {
     pub online_pokemon_count: f64,
     pub energy_distance_to_online: f64,
     pub opponent_discard_size: f64,
+    // Features below are 0 in the baseline, so they don't change its behavior.
+    /// Damage counters (in HP) on the opponent's active minus on mine.
+    pub active_damage: f64,
+    /// Remaining HP on my bench minus the opponent's.
+    pub bench_hp: f64,
+    /// Number of benched Pokémon, mine minus the opponent's.
+    pub bench_count: f64,
+    /// Sum of evolution stages of Pokémon in play, mine minus the opponent's.
+    pub evolution_stage: f64,
+    /// Pokémon in hand that can evolve something already in play, mine minus the opponent's.
+    pub evolutions_in_hand: f64,
+    /// Special conditions on the opponent's active minus on mine.
+    pub active_status: f64,
+    /// 1 if my active can knock out the opponent's active with an attack it can already pay
+    /// for (fixed damage only), minus the same for the opponent.
+    pub can_ko_active: f64,
+    /// Total energy attached to Pokémon in play, mine minus the opponent's.
+    pub attached_energy: f64,
+}
+
+impl Default for ValueFunctionParams {
+    fn default() -> Self {
+        Self::baseline()
+    }
 }
 
 impl ValueFunctionParams {
@@ -46,26 +79,37 @@ impl ValueFunctionParams {
             online_pokemon_count: 0.0,
             energy_distance_to_online: 0.0,
             opponent_discard_size: 0.1,
+            active_damage: 0.0,
+            bench_hp: 0.0,
+            bench_count: 0.0,
+            evolution_stage: 0.0,
+            evolutions_in_hand: 0.0,
+            active_status: 0.0,
+            can_ko_active: 0.0,
+            attached_energy: 0.0,
         }
     }
 
     /// Variant parameters
     pub const fn variant() -> Self {
-        Self {
-            points: 10_000.0,
-            pokemon_value: 1.0,
-            hand_size: 1.0,
-            deck_size: 1.0,
-            active_retreat_cost: 1.0,
-            active_pokemon_online_score: 500.0,
-            active_safety: 1.0,
-            active_has_tool: 10.0,
-            is_winner: 100_000.0,
-            turns_until_opponent_wins: 100.0,
-            online_pokemon_count: 0.0,
-            energy_distance_to_online: 0.0,
-            opponent_discard_size: 0.1,
-        }
+        Self::baseline()
+    }
+
+    pub fn from_json_file(path: &str) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+        serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))
+    }
+
+    /// Parameters from the JSON file named by `DECKGYM_VALUE_PARAMS`, or the baseline if the
+    /// variable is unset or empty. Read once per process. Panics if the file can't be loaded, so a
+    /// typo never silently falls back to the baseline.
+    pub fn loaded() -> &'static Self {
+        static LOADED: OnceLock<ValueFunctionParams> = OnceLock::new();
+        LOADED.get_or_init(|| match std::env::var(VALUE_PARAMS_ENV) {
+            Ok(path) if !path.is_empty() => Self::from_json_file(&path)
+                .unwrap_or_else(|e| panic!("Invalid {VALUE_PARAMS_ENV}: {e}")),
+            _ => Self::baseline(),
+        })
     }
 }
 
@@ -78,6 +122,11 @@ pub fn variant_value_function(state: &State, myself: usize) -> f64 {
     parametric_value_function(state, myself, &ValueFunctionParams::variant())
 }
 
+/// The parametric value function with [`ValueFunctionParams::loaded`] coefficients
+pub fn loaded_value_function(state: &State, myself: usize) -> f64 {
+    parametric_value_function(state, myself, ValueFunctionParams::loaded())
+}
+
 /// Parametric value function that uses the provided coefficients
 pub fn parametric_value_function(
     state: &State,
@@ -86,8 +135,8 @@ pub fn parametric_value_function(
 ) -> f64 {
     let opponent = (myself + 1) % 2;
     let (my, opp) = (
-        extract_features(state, myself, 1.0),
-        extract_features(state, opponent, 1.0),
+        extract_features(state, myself, params),
+        extract_features(state, opponent, params),
     );
     let score = (my.points - opp.points) * params.points
         + (my.pokemon_value - opp.pokemon_value) * params.pokemon_value
@@ -104,7 +153,15 @@ pub fn parametric_value_function(
         + (my.online_pokemon_count - opp.online_pokemon_count) * params.online_pokemon_count
         + (my.energy_distance_to_online - opp.energy_distance_to_online)
             * params.energy_distance_to_online
-        + opp.discard_size * params.opponent_discard_size;
+        + opp.discard_size * params.opponent_discard_size
+        + (opp.active_damage - my.active_damage) * params.active_damage
+        + (my.bench_hp - opp.bench_hp) * params.bench_hp
+        + (my.bench_count - opp.bench_count) * params.bench_count
+        + (my.evolution_stage - opp.evolution_stage) * params.evolution_stage
+        + (my.evolutions_in_hand - opp.evolutions_in_hand) * params.evolutions_in_hand
+        + (opp.active_status - my.active_status) * params.active_status
+        + (my.can_ko_active - opp.can_ko_active) * params.can_ko_active
+        + (my.attached_energy - opp.attached_energy) * params.attached_energy;
     trace!("parametric_value_function: {score} (params: {params:?}, my: {my:?}, opp: {opp:?})");
     score
 }
@@ -125,23 +182,76 @@ struct Features {
     is_winner: f64,
     turns_until_opponent_wins: f64,
     discard_size: f64,
+    active_damage: f64,
+    bench_hp: f64,
+    bench_count: f64,
+    evolution_stage: f64,
+    evolutions_in_hand: f64,
+    active_status: f64,
+    can_ko_active: f64,
+    attached_energy: f64,
+}
+
+/// Computes `f` only when its coefficient is used, since the score ignores it otherwise.
+fn if_used(coefficient: f64, f: impl FnOnce() -> f64) -> f64 {
+    if coefficient != 0.0 {
+        f()
+    } else {
+        0.0
+    }
 }
 
 /// Extract features for a single player
-fn extract_features(state: &State, player: usize, active_factor: f64) -> Features {
+fn extract_features(state: &State, player: usize, params: &ValueFunctionParams) -> Features {
+    let active_factor = 1.0;
     let points = state.points[player] as f64;
-    let pokemon_value = calculate_pokemon_value(state, player, active_factor);
+    let pokemon_value = if_used(params.pokemon_value, || {
+        calculate_pokemon_value(state, player, active_factor)
+    });
     let hand_size = state.hands[player].len() as f64;
     let deck_size = state.decks[player].cards.len() as f64;
     let active_retreat_cost = get_active_retreat_cost(state, player) as f64;
     let (online_pokemon_count, energy_distance_to_online) =
-        calculate_online_metrics(state, player, active_factor);
-    let active_pokemon_online_score = calculate_active_pokemon_online_score(state, player);
+        if params.online_pokemon_count != 0.0 || params.energy_distance_to_online != 0.0 {
+            calculate_online_metrics(state, player, active_factor)
+        } else {
+            (0.0, 0.0)
+        };
+    let active_pokemon_online_score = if_used(params.active_pokemon_online_score, || {
+        calculate_active_pokemon_online_score(state, player)
+    });
     let active_safety = calculate_active_safety(state, player);
     let active_has_tool = get_active_has_tool(state, player);
     let is_winner = check_is_winner(state, player);
-    let turns_until_opponent_wins = calculate_turns_until_opponent_wins(state, player);
+    let turns_until_opponent_wins = if_used(params.turns_until_opponent_wins, || {
+        calculate_turns_until_opponent_wins(state, player)
+    });
     let discard_size = state.discard_piles[player].len() as f64;
+    let active = state.maybe_get_active(player);
+    let active_damage = active.map_or(0.0, |a| a.get_damage_counters() as f64);
+    let bench_hp = state
+        .enumerate_bench_pokemon(player)
+        .map(|(_, card)| card.get_remaining_hp() as f64)
+        .sum();
+    let bench_count = state.enumerate_bench_pokemon(player).count() as f64;
+    let evolution_stage = state
+        .enumerate_in_play_pokemon(player)
+        .map(|(_, card)| match &card.card {
+            Card::Pokemon(pokemon) => pokemon.stage as f64,
+            Card::Trainer(_) => 0.0,
+        })
+        .sum();
+    let evolutions_in_hand = if_used(params.evolutions_in_hand, || {
+        count_evolutions_in_hand(state, player)
+    });
+    let active_status = active.map_or(0.0, |a| a.count_status_conditions() as f64);
+    let can_ko_active = if_used(params.can_ko_active, || {
+        can_ko_opponent_active(state, player)
+    });
+    let attached_energy = state
+        .enumerate_in_play_pokemon(player)
+        .map(|(_, card)| card.attached_energy.len() as f64)
+        .sum();
 
     Features {
         points,
@@ -157,6 +267,49 @@ fn extract_features(state: &State, player: usize, active_factor: f64) -> Feature
         is_winner,
         turns_until_opponent_wins,
         discard_size,
+        active_damage,
+        bench_hp,
+        bench_count,
+        evolution_stage,
+        evolutions_in_hand,
+        active_status,
+        can_ko_active,
+        attached_energy,
+    }
+}
+
+/// Pokémon cards in hand that can evolve at least one of the player's Pokémon in play
+fn count_evolutions_in_hand(state: &State, player: usize) -> f64 {
+    state.hands[player]
+        .iter()
+        .filter(|hand_card| {
+            state
+                .enumerate_in_play_pokemon(player)
+                .any(|(_, in_play)| in_play.card.can_evolve_into(hand_card))
+        })
+        .count() as f64
+}
+
+/// 1.0 if the player's active has an attack it can already pay for whose fixed damage reaches
+/// the opponent's active remaining HP (ignores weakness and damage modifiers)
+fn can_ko_opponent_active(state: &State, player: usize) -> f64 {
+    let opponent = (player + 1) % 2;
+    let (Some(mine), Some(theirs)) = (
+        state.maybe_get_active(player),
+        state.maybe_get_active(opponent),
+    ) else {
+        return 0.0;
+    };
+    let target_hp = theirs.get_remaining_hp();
+    let can_ko = mine.card.get_attacks().iter().any(|atk| {
+        atk.fixed_damage > 0
+            && atk.fixed_damage >= target_hp
+            && energy_missing(mine, &atk.energy_required, state, player).is_empty()
+    });
+    if can_ko {
+        1.0
+    } else {
+        0.0
     }
 }
 
@@ -370,4 +523,35 @@ fn calculate_active_pokemon_online_score(state: &State, player: usize) -> f64 {
 
     // Return ratio (0.0 to 1.0)
     (have / total_needed).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn params_json_fills_missing_fields_with_baseline() {
+        let params: ValueFunctionParams =
+            serde_json::from_str(r#"{"hand_size": 5.0, "bench_hp": 0.5}"#).unwrap();
+        assert_eq!(
+            params,
+            ValueFunctionParams {
+                hand_size: 5.0,
+                bench_hp: 0.5,
+                ..ValueFunctionParams::baseline()
+            }
+        );
+    }
+
+    #[test]
+    fn params_json_rejects_unknown_fields() {
+        assert!(serde_json::from_str::<ValueFunctionParams>(r#"{"hand_sise": 5.0}"#).is_err());
+    }
+
+    #[test]
+    fn baseline_round_trips_through_json() {
+        let json = serde_json::to_string(&ValueFunctionParams::baseline()).unwrap();
+        let back: ValueFunctionParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ValueFunctionParams::baseline());
+    }
 }
