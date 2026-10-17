@@ -701,6 +701,20 @@ pub(crate) fn handle_damage_only(
         })
         .collect::<Vec<(u32, usize, usize)>>();
 
+    if is_from_active_attack {
+        let to_opponent: u32 = modified_targets
+            .iter()
+            .filter(|(_, player, _)| *player != attacking_player)
+            .map(|(damage, _, _)| *damage)
+            .sum();
+        if to_opponent > 0 {
+            let turn = state.turn_count;
+            state
+                .tally
+                .record_attack_damage(attacking_player, turn, to_opponent);
+        }
+    }
+
     // Handle each target individually
     for (damage, target_player, target_pokemon_idx) in modified_targets {
         // 0 damage is not damage, so it must not use up a "first damaged" Disguise
@@ -934,6 +948,11 @@ pub(crate) fn handle_knockouts(
     apply_survive_knockout_turn_effects(state, is_from_active_attack);
 
     let knockouts = get_knocked_out(state);
+    // Taken before resolving the KOs: a counterattack can knock out the attacker too.
+    let attacker_types = state.in_play_pokemon[attacking_ref.0][attacking_ref.1]
+        .as_ref()
+        .map(|pokemon| pokemon.get_energy_types())
+        .unwrap_or_default();
     let iris_bonus_active = is_iris_bonus_active(state, attacking_ref, is_from_active_attack);
 
     // Handle knockouts: Discard cards and award points (to potentially short-circuit promotions)
@@ -978,6 +997,12 @@ pub(crate) fn handle_knockouts(
                     ko_initiator
                 );
             }
+        }
+
+        if is_from_active_attack && ko_receiver != attacking_ref.0 && ko_pokemon_idx == 0 {
+            state
+                .tally
+                .record_active_ko(attacking_ref.0, &attacker_types);
         }
 
         // Record KOs dealt by an opponent's active attack (for revenge attacks such as
