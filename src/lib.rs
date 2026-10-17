@@ -7,6 +7,7 @@ pub mod data_exporter;
 pub mod database;
 pub mod deck;
 pub mod effects;
+pub mod event_stats;
 pub mod example_utils;
 pub mod game;
 pub mod gameplay_stats_collector;

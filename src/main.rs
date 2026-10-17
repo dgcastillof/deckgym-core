@@ -1,7 +1,8 @@
 use clap::{ArgAction, Parser, Subcommand};
 use colored::Colorize;
 use deckgym::optimize::{ParallelConfig, SimulationConfig};
-use deckgym::players::{parse_player_code, PlayerCode};
+use deckgym::event_stats::simulate_event_stats;
+use deckgym::players::{fill_code_array, parse_player_code, PlayerCode};
 use deckgym::simulate::initialize_logger;
 use deckgym::state::GameOutcome;
 use deckgym::{cli_optimize, play, simulate, Deck, PlayConfig};
@@ -79,6 +80,12 @@ enum Commands {
         /// Per-decision timeout for an external bot, in milliseconds
         #[arg(long, default_value_t = deckgym::simulate::DEFAULT_BOT_TIMEOUT_MS)]
         bot_timeout_ms: u64,
+
+        /// Write one record per game (winner, turns, points, Active KOs by attacker type, max
+        /// damage of one attack, Pokemon put into play by stage) to this JSON file, for event
+        /// task statistics. Only with a single opponent deck file.
+        #[arg(long)]
+        stats_json: Option<String>,
     },
     /// Play exactly one game and print a URL to open it in the web viewer (see viewer/). A thin
     /// wrapper around `simulate`'s replay-recording path, for the common "play one game, look at
@@ -327,6 +334,7 @@ fn main() {
             bot_a,
             bot_b,
             bot_timeout_ms,
+            stats_json,
         } => {
             initialize_logger(verbose);
 
@@ -334,7 +342,30 @@ fn main() {
 
             // Check if deck_b_or_folder is a directory
             let path = std::path::Path::new(&deck_b_or_folder);
-            if path.is_dir() {
+            if let Some(stats_path) = stats_json {
+                if path.is_dir() {
+                    eprintln!("--stats-json needs a single opponent deck file, not a folder");
+                    std::process::exit(2);
+                }
+                let report = simulate_event_stats(
+                    &deck_a,
+                    &deck_b_or_folder,
+                    fill_code_array(players),
+                    num,
+                    seed,
+                    ParallelConfig {
+                        enabled: parallel,
+                        num_threads: threads,
+                    },
+                )
+                .expect("Failed to run simulation");
+                fs::write(
+                    &stats_path,
+                    serde_json::to_string(&report).expect("Failed to serialize stats"),
+                )
+                .expect("Failed to write --stats-json file");
+                warn!("Per-game stats written to {stats_path}");
+            } else if path.is_dir() {
                 simulate_against_folder(
                     &deck_a,
                     &deck_b_or_folder,

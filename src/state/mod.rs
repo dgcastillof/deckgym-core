@@ -1,6 +1,7 @@
 mod energy;
 pub mod observation;
 mod played_card;
+mod tally;
 
 use log::{debug, trace};
 use rand::rngs::StdRng;
@@ -21,6 +22,7 @@ use crate::{
 };
 
 pub use played_card::{has_serperior_jungle_totem, PlayedCard};
+pub use tally::GameTally;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GameOutcome {
@@ -134,6 +136,9 @@ pub struct State {
     pub(crate) points_at_own_turn_start: [u8; 2],
     #[serde(default)]
     pub(crate) points_gained_during_own_last_turn: [u8; 2],
+    // Reporting-only counters (KOs by attacker type, damage per attack). Ignored by Eq/Hash.
+    #[serde(default)]
+    pub tally: GameTally,
     // Maps turn to a vector of effects (cards) for that turn. Using BTreeMap to keep State hashable.
     turn_effects: BTreeMap<u8, Vec<TurnEffect>>,
 }
@@ -173,6 +178,7 @@ impl State {
             own_knocked_out_count: [0, 0],
             points_at_own_turn_start: [0, 0],
             points_gained_during_own_last_turn: [0, 0],
+            tally: GameTally::default(),
             turn_effects: BTreeMap::new(),
         }
     }
