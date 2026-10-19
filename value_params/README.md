@@ -28,3 +28,19 @@ Pearson / Spearman por matchup contra los winrates reales (wins/(wins+losses)):
 Lo ganado en top 10 con `v` es en buena parte sobreajuste (fuera de muestra mejora poco) y no
 transfiere a `e2`. El cambio que si ayudo es estructural: `v` ahora resuelve sus propias
 elecciones pendientes (Rare Candy, Poke Ball...) antes de evaluar; sin eso nunca jugaba Rare Candy.
+
+## Dano real (`real_damage`, step 2.1, 2026-10-18)
+
+`"real_damage": true` hace que `can_ko_active` y `turns_until_opponent_wins` valuen cada ataque con
+el dano esperado que calcula el motor (`actions::expected_attack_damage`: la misma prediccion que un
+ataque real, con debilidad, banca, estadio, herramientas y monedas por su probabilidad) en vez del
+numero impreso. Un Pokemon de la banca se valua como si estuviera de activo. En el baseline es
+`false`, asi que sin el campo todo queda igual que antes (lo chequea un test contra la version vieja).
+
+- `real-damage.json`: baseline + `real_damage: true`.
+
+    node scripts/deckgym-benchmark.mjs --players e2,e2 --top 20 --num 200 --params ../deckgym-core/value_params/real-damage.json
+
+Con `e2`, top 20, 200 por par, semilla 20261017: Pearson por matchup 0.272 -> 0.288, MAE 18.2 ->
+16.9pp (detalle en benchmarks/README.md de tcgpocket). `e2` queda ~15-20% mas lento por partida.
+No cuenta el dano que un efecto hace dentro de su closure ni el de las habilidades (Greninja).

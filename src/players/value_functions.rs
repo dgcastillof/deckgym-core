@@ -8,9 +8,10 @@ use std::sync::OnceLock;
 use log::trace;
 use serde::{Deserialize, Serialize};
 
+use crate::actions::expected_attack_damage;
 use crate::card_logic::get_highest_evolutions;
 use crate::hooks::energy_missing;
-use crate::models::{Card, EnergyType, PlayedCard};
+use crate::models::{Attack, Card, EnergyType, PlayedCard};
 use crate::state::GameOutcome;
 use crate::State;
 
@@ -54,6 +55,10 @@ pub struct ValueFunctionParams {
     pub can_ko_active: f64,
     /// Total energy attached to Pokémon in play, mine minus the opponent's.
     pub attached_energy: f64,
+    /// Price attacks with the engine's expected damage (Weakness, bench scaling, Stadiums, Tools,
+    /// coin flips...) instead of the printed damage, in `can_ko_active` and
+    /// `turns_until_opponent_wins`. False in the baseline.
+    pub real_damage: bool,
 }
 
 impl Default for ValueFunctionParams {
@@ -87,6 +92,7 @@ impl ValueFunctionParams {
             active_status: 0.0,
             can_ko_active: 0.0,
             attached_energy: 0.0,
+            real_damage: false,
         }
     }
 
@@ -134,9 +140,10 @@ pub fn parametric_value_function(
     params: &ValueFunctionParams,
 ) -> f64 {
     let opponent = (myself + 1) % 2;
+    let mut pricer = AttackPricer::new(state, params.real_damage);
     let (my, opp) = (
-        extract_features(state, myself, params),
-        extract_features(state, opponent, params),
+        extract_features(state, myself, params, &mut pricer),
+        extract_features(state, opponent, params, &mut pricer),
     );
     let score = (my.points - opp.points) * params.points
         + (my.pokemon_value - opp.pokemon_value) * params.pokemon_value
@@ -202,7 +209,12 @@ fn if_used(coefficient: f64, f: impl FnOnce() -> f64) -> f64 {
 }
 
 /// Extract features for a single player
-fn extract_features(state: &State, player: usize, params: &ValueFunctionParams) -> Features {
+fn extract_features(
+    state: &State,
+    player: usize,
+    params: &ValueFunctionParams,
+    pricer: &mut AttackPricer,
+) -> Features {
     let active_factor = 1.0;
     let points = state.points[player] as f64;
     let pokemon_value = if_used(params.pokemon_value, || {
@@ -224,7 +236,7 @@ fn extract_features(state: &State, player: usize, params: &ValueFunctionParams) 
     let active_has_tool = get_active_has_tool(state, player);
     let is_winner = check_is_winner(state, player);
     let turns_until_opponent_wins = if_used(params.turns_until_opponent_wins, || {
-        calculate_turns_until_opponent_wins(state, player)
+        calculate_turns_until_opponent_wins(state, player, pricer)
     });
     let discard_size = state.discard_piles[player].len() as f64;
     let active = state.maybe_get_active(player);
@@ -246,7 +258,7 @@ fn extract_features(state: &State, player: usize, params: &ValueFunctionParams) 
     });
     let active_status = active.map_or(0.0, |a| a.count_status_conditions() as f64);
     let can_ko_active = if_used(params.can_ko_active, || {
-        can_ko_opponent_active(state, player)
+        can_ko_opponent_active(state, player, pricer)
     });
     let attached_energy = state
         .enumerate_in_play_pokemon(player)
@@ -290,9 +302,62 @@ fn count_evolutions_in_hand(state: &State, player: usize) -> f64 {
         .count() as f64
 }
 
-/// 1.0 if the player's active has an attack it can already pay for whose fixed damage reaches
-/// the opponent's active remaining HP (ignores weakness and damage modifiers)
-fn can_ko_opponent_active(state: &State, player: usize) -> f64 {
+/// Prices the attacks of one player's Pokémon against the other player's Pokémon: the printed
+/// damage, or with `real_damage` the engine's expected damage ([`expected_attack_damage`]).
+///
+/// The engine forecasts attacks of the current player's Active against the opponent's Active, so
+/// any other pairing is priced on a scratch copy of the state (cloned once per evaluation, on
+/// first use, and shared by both players' features) with the attacker as current player and both
+/// Pokémon swapped into the Active Spots: a benched Pokémon is priced as if it were promoted,
+/// which is when it would attack or be attacked.
+struct AttackPricer<'a> {
+    state: &'a State,
+    real_damage: bool,
+    scratch: Option<State>,
+}
+
+impl<'a> AttackPricer<'a> {
+    fn new(state: &'a State, real_damage: bool) -> Self {
+        Self {
+            state,
+            real_damage,
+            scratch: None,
+        }
+    }
+
+    /// Damage of `attack` of `attacker`'s Pokémon at `attacker_idx` against the other player's
+    /// Pokémon at `defender_idx`. Falls back to the printed damage when the engine can't price it.
+    fn damage(
+        &mut self,
+        attacker: usize,
+        attacker_idx: usize,
+        attack: &Attack,
+        defender_idx: usize,
+    ) -> f64 {
+        let printed = attack.fixed_damage as f64;
+        if !self.real_damage {
+            return printed;
+        }
+        let state = self.state;
+        if attacker_idx == 0 && defender_idx == 0 && state.current_player == attacker {
+            return expected_attack_damage(state, attack).unwrap_or(printed);
+        }
+        let defender = (attacker + 1) % 2;
+        let scratch = self.scratch.get_or_insert_with(|| state.clone());
+        scratch.current_player = attacker;
+        scratch.in_play_pokemon[attacker].swap(0, attacker_idx);
+        scratch.in_play_pokemon[defender].swap(0, defender_idx);
+        let damage = expected_attack_damage(scratch, attack).unwrap_or(printed);
+        scratch.in_play_pokemon[defender].swap(0, defender_idx);
+        scratch.in_play_pokemon[attacker].swap(0, attacker_idx);
+        damage
+    }
+}
+
+/// 1.0 if the player's active has an attack it can already pay for whose damage reaches the
+/// opponent's active remaining HP. Printed damage only, or with `real_damage` the engine's
+/// expected damage (with weakness and damage modifiers).
+fn can_ko_opponent_active(state: &State, player: usize, pricer: &mut AttackPricer) -> f64 {
     let opponent = (player + 1) % 2;
     let (Some(mine), Some(theirs)) = (
         state.maybe_get_active(player),
@@ -300,11 +365,12 @@ fn can_ko_opponent_active(state: &State, player: usize) -> f64 {
     ) else {
         return 0.0;
     };
-    let target_hp = theirs.get_remaining_hp();
+    let target_hp = theirs.get_remaining_hp() as f64;
     let can_ko = mine.card.get_attacks().iter().any(|atk| {
-        atk.fixed_damage > 0
-            && atk.fixed_damage >= target_hp
-            && energy_missing(mine, &atk.energy_required, state, player).is_empty()
+        energy_missing(mine, &atk.energy_required, state, player).is_empty() && {
+            let damage = pricer.damage(player, 0, atk, 0);
+            damage > 0.0 && damage >= target_hp
+        }
     });
     if can_ko {
         1.0
@@ -337,31 +403,54 @@ fn check_is_winner(state: &State, player: usize) -> f64 {
 }
 
 /// Calculate expected turns until opponent wins
-/// Uses opponent's active damage and simulates KOs until opponent reaches 3 points
-fn calculate_turns_until_opponent_wins(state: &State, player: usize) -> f64 {
+/// Uses opponent's active damage and simulates KOs until opponent reaches 3 points.
+/// With `real_damage`, attacks are priced by the engine against each target (see
+/// [`AttackPricer`]) instead of by their printed damage.
+fn calculate_turns_until_opponent_wins(
+    state: &State,
+    player: usize,
+    pricer: &mut AttackPricer,
+) -> f64 {
     let opponent = (player + 1) % 2;
+    let real_damage = pricer.real_damage;
 
-    // Find the closest pokemon to being able to deal damage (by energy requirements)
-    let best_threat = state
+    // Find the closest attack to dealing damage to my active: least missing energy, then most
+    // damage (first one on ties). Attacks are priced by increasing missing energy (stable, so ties
+    // keep board order) and only until the first damaging group, since pricing can be costly.
+    let mut candidates: Vec<(usize, Attack, usize)> = state
         .enumerate_in_play_pokemon(opponent)
-        .filter_map(|(_, pokemon)| {
-            let best_attack = pokemon
-                .card
-                .get_attacks()
-                .iter()
-                .filter(|atk| atk.fixed_damage > 0) // Only consider attacks that deal damage
-                .map(|atk| {
-                    let missing = energy_missing(pokemon, &atk.energy_required, state, opponent);
-                    (atk.fixed_damage, missing.len())
-                })
-                .min_by_key(|(damage, missing)| (*missing, u32::MAX - damage)); // Prioritize by missing energy, then by damage
-
-            best_attack
+        .flat_map(|(idx, pokemon)| {
+            let attacks = pokemon.card.get_attacks().into_iter();
+            // Printed damage 0 is never a threat without real_damage
+            let attacks = attacks.filter(move |atk| real_damage || atk.fixed_damage > 0);
+            attacks.map(move |atk| {
+                let missing = energy_missing(pokemon, &atk.energy_required, state, opponent);
+                (idx, atk, missing.len())
+            })
         })
-        .min_by_key(|(damage, missing)| (*missing, u32::MAX - damage)); // Find pokemon with least missing energy
-    let (max_damage, missing_energy) = match best_threat {
-        Some((damage, missing)) => (damage as f64, missing),
-        None => return 30.0, // No pokemon can deal damage
+        .collect();
+    candidates.sort_by_key(|(_, _, missing)| *missing);
+    let mut best_threat: Option<(usize, Attack, f64, usize)> = None;
+    for (idx, atk, missing) in candidates {
+        if best_threat
+            .as_ref()
+            .is_some_and(|(_, _, _, best_missing)| missing > *best_missing)
+        {
+            break;
+        }
+        let damage = pricer.damage(opponent, idx, &atk, 0);
+        if damage <= 0.0 {
+            continue; // Only consider attacks that deal damage
+        }
+        if best_threat
+            .as_ref()
+            .is_none_or(|(_, _, best_damage, _)| damage > *best_damage)
+        {
+            best_threat = Some((idx, atk, damage, missing));
+        }
+    }
+    let Some((threat_idx, threat_attack, max_damage, missing_energy)) = best_threat else {
+        return 30.0; // No pokemon can deal damage
     };
 
     let mut total_turns = 0.0;
@@ -378,6 +467,7 @@ fn calculate_turns_until_opponent_wins(state: &State, player: usize) -> f64 {
     }
 
     // Simulate KOing bench pokemon until opponent has 3+ points
+    let mut bench_damage: [Option<f64>; 4] = [None; 4];
     while opp_points < 3 {
         // Find the safest bench pokemon (highest hp / ko_points)
         let safest_bench = state
@@ -393,11 +483,22 @@ fn calculate_turns_until_opponent_wins(state: &State, player: usize) -> f64 {
                 }
             });
 
-        let Some((_, safest_pokemon)) = safest_bench else {
+        let Some((bench_idx, safest_pokemon)) = safest_bench else {
             break; // No more bench pokemon
         };
 
-        let turns_to_ko = (safest_pokemon.get_remaining_hp() as f64 / max_damage).ceil();
+        let damage = if real_damage {
+            // The loop can pick the same Pokémon again, so price each one once
+            *bench_damage[bench_idx].get_or_insert_with(|| {
+                pricer.damage(opponent, threat_idx, &threat_attack, bench_idx)
+            })
+        } else {
+            max_damage
+        };
+        if damage <= 0.0 {
+            return 30.0; // The threat can't damage it (e.g. Safeguard against an ex)
+        }
+        let turns_to_ko = (safest_pokemon.get_remaining_hp() as f64 / damage).ceil();
         total_turns += turns_to_ko;
         opp_points += safest_pokemon.card.get_knockout_points();
     }
@@ -553,5 +654,261 @@ mod tests {
         let json = serde_json::to_string(&ValueFunctionParams::baseline()).unwrap();
         let back: ValueFunctionParams = serde_json::from_str(&json).unwrap();
         assert_eq!(back, ValueFunctionParams::baseline());
+    }
+
+    use crate::card_ids::CardId;
+    use crate::database::get_card_by_enum;
+    use crate::test_support::load_test_deck;
+    use crate::players::RandomPlayer;
+    use crate::Game;
+    use strum::IntoEnumIterator;
+
+    fn board(current_player: usize, mine: Vec<PlayedCard>, theirs: Vec<PlayedCard>) -> State {
+        let mut state = State::default();
+        state.current_player = current_player;
+        for (idx, card) in mine.into_iter().enumerate() {
+            state.in_play_pokemon[0][idx] = Some(card);
+        }
+        for (idx, card) in theirs.into_iter().enumerate() {
+            state.in_play_pokemon[1][idx] = Some(card);
+        }
+        state
+    }
+
+    fn first_attack(id: CardId) -> Attack {
+        get_card_by_enum(id).get_attacks()[0].clone()
+    }
+
+    fn can_ko(state: &State, player: usize, real_damage: bool) -> f64 {
+        can_ko_opponent_active(state, player, &mut AttackPricer::new(state, real_damage))
+    }
+
+    fn turns(state: &State, player: usize, real_damage: bool) -> f64 {
+        let mut pricer = AttackPricer::new(state, real_damage);
+        calculate_turns_until_opponent_wins(state, player, &mut pricer)
+    }
+
+    #[test]
+    fn real_damage_adds_weakness() {
+        // Pikachu's Gnaw (20, Lightning) against Squirtle (weak to Lightning) and Pikachu (not)
+        let gnaw = first_attack(CardId::A1094Pikachu);
+        let state = board(
+            0,
+            vec![PlayedCard::from_id(CardId::A1094Pikachu)],
+            vec![PlayedCard::from_id(CardId::A1053Squirtle)],
+        );
+        assert_eq!(expected_attack_damage(&state, &gnaw), Some(40.0));
+        let state = board(
+            0,
+            vec![PlayedCard::from_id(CardId::A1094Pikachu)],
+            vec![PlayedCard::from_id(CardId::A1094Pikachu)],
+        );
+        assert_eq!(expected_attack_damage(&state, &gnaw), Some(20.0));
+    }
+
+    #[test]
+    fn real_damage_prices_the_non_current_player_benched_attacker() {
+        // It's player 0's turn; player 1's benched Pikachu would hit my Squirtle for 40
+        let gnaw = first_attack(CardId::A1094Pikachu);
+        let state = board(
+            0,
+            vec![
+                PlayedCard::from_id(CardId::A1053Squirtle),
+                PlayedCard::from_id(CardId::A1094Pikachu),
+            ],
+            vec![
+                PlayedCard::from_id(CardId::A1053Squirtle),
+                PlayedCard::from_id(CardId::A1094Pikachu),
+            ],
+        );
+        let mut pricer = AttackPricer::new(&state, true);
+        assert_eq!(pricer.damage(1, 1, &gnaw, 0), 40.0);
+        // The scratch copy is restored between calls: against my benched Pikachu, no weakness
+        assert_eq!(pricer.damage(1, 1, &gnaw, 1), 20.0);
+        assert_eq!(pricer.damage(1, 1, &gnaw, 0), 40.0);
+        // The same scratch copy also prices the other side
+        assert_eq!(pricer.damage(0, 1, &gnaw, 0), 40.0);
+        assert_eq!(AttackPricer::new(&state, false).damage(1, 1, &gnaw, 0), 20.0);
+    }
+
+    #[test]
+    fn real_damage_scales_with_full_bench() {
+        // Pikachu ex's Circle Circuit: 30 for each benched Lightning Pokémon (printed 30)
+        let circuit = first_attack(CardId::A1096PikachuEx);
+        let attacker = || {
+            PlayedCard::from_id(CardId::A1096PikachuEx)
+                .with_energy(vec![EnergyType::Lightning, EnergyType::Lightning])
+        };
+        let pikachu = || PlayedCard::from_id(CardId::A1094Pikachu);
+        let full_bench = board(
+            0,
+            vec![attacker(), pikachu(), pikachu(), pikachu()],
+            vec![pikachu()],
+        );
+        let empty_bench = board(0, vec![attacker()], vec![pikachu()]);
+        assert_eq!(expected_attack_damage(&full_bench, &circuit), Some(90.0));
+        assert_eq!(expected_attack_damage(&empty_bench, &circuit), Some(0.0));
+
+        // Pikachu has 60 HP: only the real damage with a full bench knocks it out
+        assert_eq!(can_ko(&full_bench, 0, true), 1.0);
+        assert_eq!(can_ko(&full_bench, 0, false), 0.0);
+        assert_eq!(can_ko(&empty_bench, 0, true), 0.0);
+    }
+
+    #[test]
+    fn real_damage_shortens_turns_until_opponent_wins_with_weakness() {
+        // Opponent's Pikachu (Gnaw 20, paid) against my 60 HP Squirtle, weak to Lightning
+        let state = board(
+            0,
+            vec![PlayedCard::from_id(CardId::A1053Squirtle)],
+            vec![PlayedCard::from_id(CardId::A1094Pikachu)
+                .with_energy(vec![EnergyType::Lightning])],
+        );
+        assert_eq!(turns(&state, 0, false), 3.0);
+        assert_eq!(turns(&state, 0, true), 2.0);
+    }
+
+    #[test]
+    fn expected_attack_damage_never_panics_for_any_card() {
+        // Every implemented attack in the database, unpaid, against a plain defender
+        for id in CardId::iter() {
+            let card = get_card_by_enum(id);
+            let Card::Pokemon(_) = card else { continue };
+            let state = board(
+                0,
+                vec![PlayedCard::from_id(id)],
+                vec![PlayedCard::from_id(CardId::A1094Pikachu)],
+            );
+            for attack in card.get_attacks() {
+                if let Some(damage) = expected_attack_damage(&state, &attack) {
+                    assert!(damage.is_finite() && damage >= 0.0, "{id:?} {attack:?}");
+                }
+            }
+        }
+    }
+
+    /// `calculate_turns_until_opponent_wins` before `real_damage` existed, verbatim
+    fn legacy_turns_until_opponent_wins(state: &State, player: usize) -> f64 {
+        let opponent = (player + 1) % 2;
+        let best_threat = state
+            .enumerate_in_play_pokemon(opponent)
+            .filter_map(|(_, pokemon)| {
+                pokemon
+                    .card
+                    .get_attacks()
+                    .iter()
+                    .filter(|atk| atk.fixed_damage > 0)
+                    .map(|atk| {
+                        let missing =
+                            energy_missing(pokemon, &atk.energy_required, state, opponent);
+                        (atk.fixed_damage, missing.len())
+                    })
+                    .min_by_key(|(damage, missing)| (*missing, u32::MAX - damage))
+            })
+            .min_by_key(|(damage, missing)| (*missing, u32::MAX - damage));
+        let (max_damage, missing_energy) = match best_threat {
+            Some((damage, missing)) => (damage as f64, missing),
+            None => return 30.0,
+        };
+        let mut total_turns = 0.0;
+        let mut opp_points = state.points[opponent];
+        total_turns += missing_energy as f64;
+        if let Some(my_active) = state.maybe_get_active(player) {
+            total_turns += (my_active.get_remaining_hp() as f64 / max_damage).ceil();
+            opp_points += my_active.card.get_knockout_points();
+        }
+        while opp_points < 3 {
+            let safest_bench = state
+                .enumerate_bench_pokemon(player)
+                .max_by_key(|(_, card)| {
+                    if opp_points == 2 {
+                        card.get_remaining_hp()
+                    } else {
+                        let ko_points = card.card.get_knockout_points().max(1) as u32;
+                        card.get_remaining_hp() * 1000 / ko_points
+                    }
+                });
+            let Some((_, safest_pokemon)) = safest_bench else {
+                break;
+            };
+            total_turns += (safest_pokemon.get_remaining_hp() as f64 / max_damage).ceil();
+            opp_points += safest_pokemon.card.get_knockout_points();
+        }
+        total_turns
+    }
+
+    /// `can_ko_opponent_active` before `real_damage` existed, verbatim
+    fn legacy_can_ko_opponent_active(state: &State, player: usize) -> f64 {
+        let opponent = (player + 1) % 2;
+        let (Some(mine), Some(theirs)) = (
+            state.maybe_get_active(player),
+            state.maybe_get_active(opponent),
+        ) else {
+            return 0.0;
+        };
+        let target_hp = theirs.get_remaining_hp();
+        let can_ko = mine.card.get_attacks().iter().any(|atk| {
+            atk.fixed_damage > 0
+                && atk.fixed_damage >= target_hp
+                && energy_missing(mine, &atk.energy_required, state, player).is_empty()
+        });
+        if can_ko {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    #[test]
+    fn real_damage_false_matches_the_previous_value_function() {
+        // Every state of random games between several decks, from both players' perspective
+        let decks = [
+            "altaria.txt",
+            "mewtwoex.txt",
+            "benchmark-electric.txt",
+            "giratina-darkrai.txt",
+            "mega-absol-hydreigon.txt",
+            "suicune-greninja.txt",
+            "blastoiseex.txt",
+            "venusaur-exeggutor.txt",
+        ];
+        let real = ValueFunctionParams {
+            real_damage: true,
+            can_ko_active: 125.0,
+            ..ValueFunctionParams::baseline()
+        };
+        let mut states = 0;
+        for (i, deck_a) in decks.iter().enumerate() {
+            let deck_b = decks[(i + 1) % decks.len()];
+            for seed in 0..3 {
+                let players: Vec<Box<dyn crate::players::Player>> = vec![
+                    Box::new(RandomPlayer {
+                        deck: load_test_deck(deck_a),
+                    }),
+                    Box::new(RandomPlayer {
+                        deck: load_test_deck(deck_b),
+                    }),
+                ];
+                let mut game = Game::new(players, seed);
+                while !game.is_game_over() {
+                    game.play_tick();
+                    let state = game.get_state_clone();
+                    for player in 0..2 {
+                        assert_eq!(
+                            turns(&state, player, false),
+                            legacy_turns_until_opponent_wins(&state, player)
+                        );
+                        assert_eq!(
+                            can_ko(&state, player, false),
+                            legacy_can_ko_opponent_active(&state, player)
+                        );
+                        // The real-damage path runs on every reachable state without panicking
+                        assert!(parametric_value_function(&state, player, &real).is_finite());
+                    }
+                    states += 1;
+                }
+            }
+        }
+        assert!(states > 100, "only {states} states");
     }
 }

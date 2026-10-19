@@ -66,13 +66,51 @@ pub(crate) fn forecast_attack(
 ) -> Outcomes {
     trace!("Forecasting attack: {attack:?} (is_sub_attack={is_sub_attack})");
 
+    forecast_attack_outcomes(acting_player, state, attack, is_sub_attack).into_outcomes()
+}
+
+/// The structured (damage-as-data) distribution of an attack, before it is lowered into
+/// `Outcomes`. Shared by `forecast_attack` and `expected_attack_damage`.
+fn forecast_attack_outcomes(
+    acting_player: usize,
+    state: &State,
+    attack: &Attack,
+    is_sub_attack: bool,
+) -> AttackOutcomes {
     let base_outcomes = forecast_attack_inner(state, attack);
 
     if is_sub_attack {
-        apply_copied_attack_modifiers(acting_player, state, attack, base_outcomes).into_outcomes()
+        apply_copied_attack_modifiers(acting_player, state, attack, base_outcomes)
     } else {
-        apply_attack_common_modifiers(acting_player, state, attack, base_outcomes).into_outcomes()
+        apply_attack_common_modifiers(acting_player, state, attack, base_outcomes)
     }
+}
+
+/// Expected damage that `attack`, used by the current player's Active Pokémon, would deal to the
+/// opponent's Active Pokémon in `state`: the same forecast as a real attack (effect mechanics,
+/// coin flips weighted by their probability, confusion, the defender's prevention/Guts coins)
+/// with every damage modifier applied (Weakness, Stadiums, Tools, Supporter boosts...). Damage
+/// dealt inside effect closures (rather than carried as `AttackOutcome` data) is not counted.
+///
+/// Pure: no closures run and no RNG is consumed. Does not check that the attack can be paid
+/// for. Returns `None` when either Active Spot is empty or the attack's effect has no
+/// implementation (a real attack would panic there), so callers can fall back to the printed
+/// damage.
+pub fn expected_attack_damage(state: &State, attack: &Attack) -> Option<f64> {
+    let acting_player = state.current_player;
+    let opponent = (acting_player + 1) % 2;
+    state.in_play_pokemon[acting_player][0].as_ref()?;
+    state.in_play_pokemon[opponent][0].as_ref()?;
+    if let Some(effect) = &attack.effect {
+        EFFECT_MECHANIC_MAP.get(&effect[..])?;
+    }
+    let outcomes = forecast_attack_outcomes(acting_player, state, attack, false);
+    Some(outcomes.expected_damage_to_opponent_active(
+        state,
+        acting_player,
+        Some(&attack.title),
+        attack.effect.as_deref(),
+    ))
 }
 
 fn apply_attack_common_modifiers(

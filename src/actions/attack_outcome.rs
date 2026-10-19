@@ -571,8 +571,7 @@ impl AttackOutcomes {
     /// specific damage modifiers).
     ///
     /// This is a public lookup API for callers (e.g. bots/value functions) that want the expected
-    /// damage of a forecast attack; it is not yet wired into the default engine paths.
-    #[allow(dead_code)]
+    /// damage of a forecast attack (see `expected_attack_damage`).
     pub fn expected_damage_to(
         &self,
         state: &State,
@@ -614,7 +613,6 @@ impl AttackOutcomes {
     }
 
     /// Convenience: expected modified damage dealt to the opponent's Active Pokémon.
-    #[allow(dead_code)]
     pub fn expected_damage_to_opponent_active(
         &self,
         state: &State,
