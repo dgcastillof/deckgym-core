@@ -59,6 +59,24 @@ pub struct ValueFunctionParams {
     /// coin flips...) instead of the printed damage, in `can_ko_active` and
     /// `turns_until_opponent_wins`. False in the baseline.
     pub real_damage: bool,
+    // Step 2.2: energia, descarte, estados y banca. En 0 (o true en pokemon_value_energy) en el
+    // baseline, asi que no cambian su comportamiento.
+    /// Dano que cada Pokemon en juego puede hacer en su proximo ataque (ver [`reachable_damage`]),
+    /// mio menos el del rival. Valua la energia por el dano que habilita (la 3a y 4a de Mega
+    /// Rayquaza ex suman) y el descarte por el dano futuro que se pierde segun cuanto tarda en
+    /// recargar. Tope: el HP restante mas alto del lado rival (el dano de mas no vale).
+    pub energy_damage: f64,
+    /// Peso de los Pokemon de la banca dentro de `energy_damage` (el activo pesa 1).
+    pub energy_damage_bench: f64,
+    /// Si es false, `pokemon_value` es solo HP (sin el factor de energia hasta el costo del ataque
+    /// mas caro), para que la energia la value `energy_damage` y descartarla no cueste un fijo.
+    pub pokemon_value_energy: bool,
+    /// Dano esperado que el activo rival deja de hacer por estar dormido (moneda: 50%),
+    /// paralizado (100%) o confundido (50%), menos el mismo calculo para mi activo.
+    pub status_damage: f64,
+    /// Pokemon de la banca que ya pueden atacar (1) o estan a una energia (0.5), mios menos los
+    /// del rival: el bono de "online" de `active_pokemon_online_score` para la banca.
+    pub bench_online: f64,
 }
 
 impl Default for ValueFunctionParams {
@@ -93,6 +111,11 @@ impl ValueFunctionParams {
             can_ko_active: 0.0,
             attached_energy: 0.0,
             real_damage: false,
+            energy_damage: 0.0,
+            energy_damage_bench: 0.5,
+            pokemon_value_energy: true,
+            status_damage: 0.0,
+            bench_online: 0.0,
         }
     }
 
@@ -168,7 +191,10 @@ pub fn parametric_value_function(
         + (my.evolutions_in_hand - opp.evolutions_in_hand) * params.evolutions_in_hand
         + (opp.active_status - my.active_status) * params.active_status
         + (my.can_ko_active - opp.can_ko_active) * params.can_ko_active
-        + (my.attached_energy - opp.attached_energy) * params.attached_energy;
+        + (my.attached_energy - opp.attached_energy) * params.attached_energy
+        + (my.energy_damage - opp.energy_damage) * params.energy_damage
+        + (my.status_damage - opp.status_damage) * params.status_damage
+        + (my.bench_online - opp.bench_online) * params.bench_online;
     trace!("parametric_value_function: {score} (params: {params:?}, my: {my:?}, opp: {opp:?})");
     score
 }
@@ -197,6 +223,9 @@ struct Features {
     active_status: f64,
     can_ko_active: f64,
     attached_energy: f64,
+    energy_damage: f64,
+    status_damage: f64,
+    bench_online: f64,
 }
 
 /// Computes `f` only when its coefficient is used, since the score ignores it otherwise.
@@ -218,7 +247,7 @@ fn extract_features(
     let active_factor = 1.0;
     let points = state.points[player] as f64;
     let pokemon_value = if_used(params.pokemon_value, || {
-        calculate_pokemon_value(state, player, active_factor)
+        calculate_pokemon_value(state, player, active_factor, params.pokemon_value_energy)
     });
     let hand_size = state.hands[player].len() as f64;
     let deck_size = state.decks[player].cards.len() as f64;
@@ -264,6 +293,15 @@ fn extract_features(
         .enumerate_in_play_pokemon(player)
         .map(|(_, card)| card.attached_energy.len() as f64)
         .sum();
+    let energy_damage = if_used(params.energy_damage, || {
+        calculate_energy_damage(state, player, params.energy_damage_bench, pricer)
+    });
+    let status_damage = if_used(params.status_damage, || {
+        calculate_status_damage(state, player, pricer)
+    });
+    let bench_online = if_used(params.bench_online, || {
+        calculate_bench_online(state, player)
+    });
 
     Features {
         points,
@@ -287,6 +325,9 @@ fn extract_features(
         active_status,
         can_ko_active,
         attached_energy,
+        energy_damage,
+        status_damage,
+        bench_online,
     }
 }
 
@@ -314,6 +355,7 @@ struct AttackPricer<'a> {
     state: &'a State,
     real_damage: bool,
     scratch: Option<State>,
+    reach: [[Option<f64>; 4]; 2],
 }
 
 impl<'a> AttackPricer<'a> {
@@ -322,6 +364,7 @@ impl<'a> AttackPricer<'a> {
             state,
             real_damage,
             scratch: None,
+            reach: [[None; 4]; 2],
         }
     }
 
@@ -334,24 +377,215 @@ impl<'a> AttackPricer<'a> {
         attack: &Attack,
         defender_idx: usize,
     ) -> f64 {
+        self.damage_with_extra(attacker, attacker_idx, attack, defender_idx, &[])
+    }
+
+    /// Como [`Self::damage`], pero con `extra` energia adherida de mas al atacante (para valuar
+    /// la proxima energia: Mega Burst hace 50 mas por cada una).
+    fn damage_with_extra(
+        &mut self,
+        attacker: usize,
+        attacker_idx: usize,
+        attack: &Attack,
+        defender_idx: usize,
+        extra: &[EnergyType],
+    ) -> f64 {
         let printed = attack.fixed_damage as f64;
         if !self.real_damage {
             return printed;
         }
         let state = self.state;
-        if attacker_idx == 0 && defender_idx == 0 && state.current_player == attacker {
+        if extra.is_empty()
+            && attacker_idx == 0
+            && defender_idx == 0
+            && state.current_player == attacker
+        {
             return expected_attack_damage(state, attack).unwrap_or(printed);
         }
         let defender = (attacker + 1) % 2;
         let scratch = self.scratch.get_or_insert_with(|| state.clone());
+        let attached_len = match scratch.in_play_pokemon[attacker][attacker_idx].as_mut() {
+            Some(pokemon) => {
+                let len = pokemon.attached_energy.len();
+                pokemon.attached_energy.extend_from_slice(extra);
+                len
+            }
+            None => return printed,
+        };
         scratch.current_player = attacker;
         scratch.in_play_pokemon[attacker].swap(0, attacker_idx);
         scratch.in_play_pokemon[defender].swap(0, defender_idx);
         let damage = expected_attack_damage(scratch, attack).unwrap_or(printed);
         scratch.in_play_pokemon[defender].swap(0, defender_idx);
         scratch.in_play_pokemon[attacker].swap(0, attacker_idx);
+        if let Some(pokemon) = scratch.in_play_pokemon[attacker][attacker_idx].as_mut() {
+            pokemon.attached_energy.truncate(attached_len);
+        }
         damage
     }
+
+    /// [`reachable_damage`] de cada Pokemon en juego, calculado una vez por evaluacion: lo usan
+    /// `energy_damage` de los dos jugadores y `status_damage`.
+    fn reachable(&mut self, player: usize, idx: usize) -> f64 {
+        if let Some(damage) = self.reach[player][idx] {
+            return damage;
+        }
+        let damage = reachable_damage(self, player, idx);
+        self.reach[player][idx] = Some(damage);
+        damage
+    }
+}
+
+/// Dano que el Pokemon de `player` en `idx` puede hacer en su proximo ataque contra el activo
+/// rival (un Pokemon de la banca, como si estuviera de activo): el mejor ataque que puede pagar con
+/// una energia mas (la que se adhiere el proximo turno), o la mitad del mejor con dos mas (tarda dos
+/// turnos). La energia del tipo mas conveniente entre los del mazo. Asi la energia vale el dano que
+/// habilita aunque pase del costo del ataque, y un descarte cuesta el dano que se pierde segun
+/// cuantos turnos tarda en volver a cargar (descartar 1 de 3 casi no cuesta; todo, bastante).
+fn reachable_damage(pricer: &mut AttackPricer, player: usize, idx: usize) -> f64 {
+    let state = pricer.state;
+    let Some(pokemon) = state.in_play_pokemon[player][idx].as_ref() else {
+        return 0.0;
+    };
+    let mut types: Vec<EnergyType> = state.decks[player].energy_types().to_vec();
+    types.sort();
+    types.dedup();
+    let one: Vec<Vec<EnergyType>> = types.iter().map(|t| vec![*t]).collect();
+    let two: Vec<Vec<EnergyType>> = types
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| types[i..].iter().map(move |b| vec![*a, *b]))
+        .collect();
+    let attacks = pokemon.card.get_attacks();
+    let missing: Vec<Vec<EnergyType>> = attacks
+        .iter()
+        .map(|atk| energy_missing(pokemon, &atk.energy_required, state, player))
+        .collect();
+    // Mejor dano con alguna de las combinaciones de energia extra
+    let mut best = |combos: &[Vec<EnergyType>]| -> f64 {
+        let mut best: f64 = 0.0;
+        for (atk, missing) in attacks.iter().zip(&missing) {
+            let payable = combos.iter().filter(|extra| covers(missing, extra));
+            if atk.effect.is_none() {
+                // Sin efecto el dano no depende de la energia: se calcula una vez
+                if payable.count() > 0 {
+                    best = best.max(pricer.damage(player, idx, atk, 0));
+                }
+            } else {
+                for extra in payable {
+                    best = best.max(pricer.damage_with_extra(player, idx, atk, 0, extra));
+                }
+            }
+        }
+        best
+    };
+    if types.is_empty() {
+        return best(&[vec![]]);
+    }
+    best(&one).max(best(&two) / 2.0)
+}
+
+/// Si la energia `extra` alcanza para pagar `missing` (lo que devuelve `energy_missing`: primero
+/// los tipos, despues los incoloros con lo que sobre).
+fn covers(missing: &[EnergyType], extra: &[EnergyType]) -> bool {
+    if missing.len() > extra.len() {
+        return false;
+    }
+    let mut left = extra.to_vec();
+    for energy in missing.iter().filter(|e| **e != EnergyType::Colorless) {
+        match left.iter().position(|e| e == energy) {
+            Some(i) => {
+                left.remove(i);
+            }
+            None => return false,
+        }
+    }
+    let colorless = missing
+        .iter()
+        .filter(|e| **e == EnergyType::Colorless)
+        .count();
+    colorless <= left.len()
+}
+
+/// Suma de [`reachable_damage`] de los Pokemon en juego del jugador (la banca pesa
+/// `bench_factor`), cada uno con tope en el HP restante mas alto del lado rival.
+fn calculate_energy_damage(
+    state: &State,
+    player: usize,
+    bench_factor: f64,
+    pricer: &mut AttackPricer,
+) -> f64 {
+    let opponent = (player + 1) % 2;
+    let cap = state
+        .enumerate_in_play_pokemon(opponent)
+        .map(|(_, card)| card.get_remaining_hp() as f64)
+        .fold(0.0, f64::max);
+    let in_play: Vec<usize> = state
+        .enumerate_in_play_pokemon(player)
+        .map(|(idx, _)| idx)
+        .collect();
+    in_play
+        .into_iter()
+        .map(|idx| {
+            let factor = if idx == 0 { 1.0 } else { bench_factor };
+            factor * pricer.reachable(player, idx).min(cap)
+        })
+        .sum()
+}
+
+/// Dano esperado que el activo rival pierde en su proximo turno por sus estados: dormido 50% (la
+/// moneda del chequeo lo despierta), paralizado 100%, confundido 50% (la moneda al atacar). Con
+/// tope en el HP restante de mi activo.
+fn calculate_status_damage(state: &State, player: usize, pricer: &mut AttackPricer) -> f64 {
+    let opponent = (player + 1) % 2;
+    let (Some(mine), Some(theirs)) = (
+        state.maybe_get_active(player),
+        state.maybe_get_active(opponent),
+    ) else {
+        return 0.0;
+    };
+    let lost = if theirs.is_paralyzed() {
+        1.0
+    } else {
+        let mut attacks = 1.0;
+        if theirs.is_asleep() {
+            attacks *= 0.5;
+        }
+        if theirs.is_confused() {
+            attacks *= 0.5;
+        }
+        1.0 - attacks
+    };
+    if lost == 0.0 {
+        return 0.0;
+    }
+    // El dano esperado del motor ya viene a la mitad por la confusion: se compara contra el dano
+    // sin ella
+    let mut damage = pricer.reachable(opponent, 0);
+    if theirs.is_confused() && pricer.real_damage {
+        damage *= 2.0;
+    }
+    lost * damage.min(mine.get_remaining_hp() as f64)
+}
+
+/// Pokemon de la banca que ya pueden pagar algun ataque (1) o estan a una energia (0.5)
+fn calculate_bench_online(state: &State, player: usize) -> f64 {
+    state
+        .enumerate_bench_pokemon(player)
+        .map(|(_, card)| {
+            let min_missing = card
+                .card
+                .get_attacks()
+                .iter()
+                .map(|atk| energy_missing(card, &atk.energy_required, state, player).len())
+                .min();
+            match min_missing {
+                Some(0) => 1.0,
+                Some(1) => 0.5,
+                _ => 0.0,
+            }
+        })
+        .sum()
 }
 
 /// 1.0 if the player's active has an attack it can already pay for whose damage reaches the
@@ -538,11 +772,20 @@ fn calculate_online_metrics(state: &State, player: usize, active_factor: f64) ->
 }
 
 /// Calculate total pokemon value (HP * Energy) for a player
-fn calculate_pokemon_value(state: &State, player: usize, active_factor: f64) -> f64 {
+fn calculate_pokemon_value(
+    state: &State,
+    player: usize,
+    active_factor: f64,
+    with_energy: bool,
+) -> f64 {
     state
         .enumerate_in_play_pokemon(player)
         .map(|(pos, card)| {
-            let relevant_energy = get_relevant_energy(state, player, card);
+            let relevant_energy = if with_energy {
+                get_relevant_energy(state, player, card)
+            } else {
+                0.0
+            };
             let hp_energy_product = card.get_remaining_hp() as f64 * (relevant_energy + 1.0);
             if pos == 0 {
                 hp_energy_product * active_factor
@@ -787,6 +1030,158 @@ mod tests {
         }
     }
 
+    // Step 2.2
+
+    use crate::models::StatusCondition;
+
+    fn with_deck_energy(mut state: State, mine: Vec<EnergyType>, theirs: Vec<EnergyType>) -> State {
+        state.decks[0].energy_types = mine;
+        state.decks[1].energy_types = theirs;
+        state
+    }
+
+    fn rayquaza(energy: Vec<EnergyType>) -> PlayedCard {
+        PlayedCard::from_id(CardId::B4120MegaRayquazaEx).with_energy(energy)
+    }
+
+    /// Mega Rayquaza ex contra un Lucario ex de 190 HP, con mazo de Fuego y Rayo
+    fn rayquaza_board(energy: Vec<EnergyType>, defender: PlayedCard) -> State {
+        use EnergyType::{Fire, Lightning};
+        with_deck_energy(
+            board(0, vec![rayquaza(energy)], vec![defender]),
+            vec![Fire, Lightning],
+            vec![EnergyType::Fighting],
+        )
+    }
+
+    fn reach(state: &State, player: usize, idx: usize) -> f64 {
+        reachable_damage(&mut AttackPricer::new(state, true), player, idx)
+    }
+
+    fn energy_damage(state: &State, player: usize) -> f64 {
+        calculate_energy_damage(state, player, 0.5, &mut AttackPricer::new(state, true))
+    }
+
+    #[test]
+    fn energy_is_valued_by_the_damage_it_enables_past_the_attack_cost() {
+        use EnergyType::{Fire, Lightning};
+        let lucario = || PlayedCard::from_id(CardId::B3081MegaLucarioEx);
+        // Mega Burst cuesta [R][L] y hace 50 por cada [R]/[L]: la proxima energia suma 50
+        let two = rayquaza_board(vec![Fire, Lightning], lucario());
+        let three = rayquaza_board(vec![Fire, Lightning, Lightning], lucario());
+        assert_eq!(reach(&two, 0, 0), 150.0);
+        assert_eq!(reach(&three, 0, 0), 200.0);
+        // Con tope en los 190 HP de Lucario: el dano de mas no vale
+        assert_eq!(energy_damage(&three, 0), 190.0);
+        // El valor viejo no distingue la 3a energia (solo cuenta hasta el costo del ataque)
+        assert_eq!(
+            calculate_pokemon_value(&two, 0, 1.0, true),
+            calculate_pokemon_value(&three, 0, 1.0, true)
+        );
+        // Sin el factor de energia, pokemon_value es solo HP
+        assert_eq!(calculate_pokemon_value(&three, 0, 1.0, false), 180.0);
+    }
+
+    #[test]
+    fn unpaid_attacks_count_from_the_energy_that_completes_them() {
+        use EnergyType::{Fire, Lightning};
+        let lucario = || PlayedCard::from_id(CardId::B3081MegaLucarioEx);
+        // Sin energia, Mega Burst tarda dos turnos: la mitad de 100
+        assert_eq!(reach(&rayquaza_board(vec![], lucario()), 0, 0), 50.0);
+        // Con una, la proxima lo completa
+        assert_eq!(reach(&rayquaza_board(vec![Fire], lucario()), 0, 0), 100.0);
+        // Con energia del tipo equivocado en el mazo no se completa
+        let state = with_deck_energy(
+            board(0, vec![rayquaza(vec![Fire])], vec![lucario()]),
+            vec![Fire],
+            vec![],
+        );
+        assert_eq!(reach(&state, 0, 0), 0.0);
+        // Un Pokemon de la banca se valua como si fuera el activo, y pesa la mitad
+        let mut state = rayquaza_board(vec![Fire, Lightning], lucario());
+        state.in_play_pokemon[0][1] = Some(rayquaza(vec![Fire, Lightning]));
+        assert_eq!(reach(&state, 0, 1), 150.0);
+        assert_eq!(energy_damage(&state, 0), 150.0 + 0.5 * 150.0);
+    }
+
+    #[test]
+    fn discarding_energy_costs_the_damage_lost_until_it_recharges() {
+        use EnergyType::{Fire, Lightning};
+        let lucario = || PlayedCard::from_id(CardId::B3081MegaLucarioEx);
+        let full = rayquaza_board(vec![Fire, Fire, Lightning, Lightning], lucario());
+        let discarded = rayquaza_board(vec![], lucario());
+        // Despues de Mega Burst con 4 energias: de 190 (tope) a 50 (dos turnos para recargar)
+        assert_eq!(energy_damage(&full, 0), 190.0);
+        assert_eq!(energy_damage(&discarded, 0), 50.0);
+        // Si el rival queda con un Pokemon a 30 HP, descargar no cuesta nada
+        let weak = || lucario().with_remaining_hp(30);
+        let full = rayquaza_board(vec![Fire, Fire, Lightning, Lightning], weak());
+        let discarded = rayquaza_board(vec![], weak());
+        assert_eq!(energy_damage(&full, 0), 30.0);
+        assert_eq!(energy_damage(&discarded, 0), 30.0);
+    }
+
+    #[test]
+    fn status_damage_is_the_damage_the_opponent_loses() {
+        // El Pikachu rival (Gnaw 20, se paga con la proxima energia) contra mi Squirtle, debil a
+        // Rayo: 40 por turno
+        let with_status = |status: Option<StatusCondition>| {
+            let mut pikachu = PlayedCard::from_id(CardId::A1094Pikachu);
+            if let Some(status) = status {
+                pikachu.set_status_raw(status);
+            }
+            with_deck_energy(
+                board(0, vec![PlayedCard::from_id(CardId::A1053Squirtle)], vec![pikachu]),
+                vec![EnergyType::Water],
+                vec![EnergyType::Lightning],
+            )
+        };
+        let status = |state: &State| {
+            calculate_status_damage(state, 0, &mut AttackPricer::new(state, true))
+        };
+        assert_eq!(status(&with_status(None)), 0.0);
+        assert_eq!(status(&with_status(Some(StatusCondition::Asleep))), 20.0);
+        assert_eq!(status(&with_status(Some(StatusCondition::Paralyzed))), 40.0);
+        assert_eq!(status(&with_status(Some(StatusCondition::Confused))), 20.0);
+        // Veneno no cuenta aca (es dano, no un turno perdido)
+        assert_eq!(status(&with_status(Some(StatusCondition::Poisoned))), 0.0);
+        // Del lado del rival, mi Squirtle no tiene estados
+        let state = with_status(Some(StatusCondition::Asleep));
+        assert_eq!(
+            calculate_status_damage(&state, 1, &mut AttackPricer::new(&state, true)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn bench_online_counts_benched_attackers_and_one_energy_away() {
+        let state = board(
+            0,
+            vec![
+                PlayedCard::from_id(CardId::A1094Pikachu).with_energy(vec![EnergyType::Lightning]),
+                PlayedCard::from_id(CardId::A1094Pikachu).with_energy(vec![EnergyType::Lightning]),
+                PlayedCard::from_id(CardId::A1094Pikachu),
+                PlayedCard::from_id(CardId::A1096PikachuEx),
+            ],
+            vec![PlayedCard::from_id(CardId::A1094Pikachu)],
+        );
+        // El activo no cuenta (lo mira active_pokemon_online_score); Pikachu ex esta a dos
+        assert_eq!(calculate_bench_online(&state, 0), 1.5);
+        assert_eq!(calculate_bench_online(&state, 1), 0.0);
+    }
+
+    #[test]
+    fn covers_matches_typed_energy_first() {
+        use EnergyType::{Colorless, Fire, Lightning};
+        assert!(covers(&[], &[]));
+        assert!(covers(&[Fire], &[Fire]));
+        assert!(!covers(&[Fire], &[Lightning]));
+        assert!(covers(&[Colorless], &[Lightning]));
+        assert!(covers(&[Fire, Colorless], &[Lightning, Fire]));
+        assert!(!covers(&[Fire, Fire], &[Fire, Lightning]));
+        assert!(!covers(&[Fire, Colorless], &[Fire]));
+    }
+
     /// `calculate_turns_until_opponent_wins` before `real_damage` existed, verbatim
     fn legacy_turns_until_opponent_wins(state: &State, player: usize) -> f64 {
         let opponent = (player + 1) % 2;
@@ -877,6 +1272,18 @@ mod tests {
             can_ko_active: 125.0,
             ..ValueFunctionParams::baseline()
         };
+        let step_2_2 = ValueFunctionParams {
+            energy_damage: 2.0,
+            pokemon_value_energy: false,
+            status_damage: 1.0,
+            bench_online: 100.0,
+            ..real
+        };
+        // Los factores de las features nuevas no cambian nada con su coeficiente en 0
+        let baseline_other_factor = ValueFunctionParams {
+            energy_damage_bench: 0.9,
+            ..ValueFunctionParams::baseline()
+        };
         let mut states = 0;
         for (i, deck_a) in decks.iter().enumerate() {
             let deck_b = decks[(i + 1) % decks.len()];
@@ -904,6 +1311,11 @@ mod tests {
                         );
                         // The real-damage path runs on every reachable state without panicking
                         assert!(parametric_value_function(&state, player, &real).is_finite());
+                        assert!(parametric_value_function(&state, player, &step_2_2).is_finite());
+                        assert_eq!(
+                            baseline_value_function(&state, player),
+                            parametric_value_function(&state, player, &baseline_other_factor)
+                        );
                     }
                     states += 1;
                 }
