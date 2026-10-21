@@ -820,7 +820,6 @@ fn test_clemonts_backpack_boosts_heliolisk_active_damage() {
 }
 
 #[test]
-#[ignore = "UNCLEAR/BUG (under-applies): Backpack says '+20 damage to your opponent's Pokémon' (not 'Active'); engine only boosts active-to-active (src/hooks/core.rs get_increased_turn_effect_modifiers, early return when !is_active_to_active)"]
 fn test_clemonts_backpack_boosts_heliolisk_bench_damage_per_text() {
     let mut game = backpack_game(heliolisk());
     play(&mut game, 0, CardId::B1a066ClemontsBackpack);
@@ -831,17 +830,6 @@ fn test_clemonts_backpack_boosts_heliolisk_bench_damage_per_text() {
         40,
         "10 + 20 to each Benched Pokémon"
     );
-}
-
-#[test]
-fn test_clemonts_backpack_current_engine_bench_damage_unchanged() {
-    // Documents the engine's reading (see the ignored test above): Bench damage stays 10.
-    let mut game = backpack_game(heliolisk());
-    play(&mut game, 0, CardId::B1a066ClemontsBackpack);
-    apply(&mut game, 0, attack_action(CardId::B4061Heliolisk, 0));
-    let state = game.get_state_clone();
-    assert_eq!(state.get_remaining_hp(1, 1), 60);
-    assert_eq!(state.get_remaining_hp(1, 2), 60);
 }
 
 #[test]

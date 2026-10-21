@@ -42,12 +42,15 @@ lo manejan viven en tcgpocket (`scripts/README-deckgym.md`); aca solo estan los 
    valor propia de preparacion (`own_value.rs`, `value_params/prep.json` por `DECKGYM_PREP_PARAMS`, step 2.9);
    `d<n>`, t<n> que re-puntua sus mejores jugadas jugando dos turnos propios (step 2.9, experimental: caro).
 4. **Tests de auditoria de cartas** (`tests/pokemon/meta_audit_*_test.rs`, step 2.5): las 56 cartas de
-   los mazos que el benchmark mas desvia; los `#[ignore = "BUG: ..."]` son bugs conocidos (Teary Attack
-   y Dragon's Blessing van en el step 2.4). Resultado en `docs/cartas-sospechosas.md` de tcgpocket.
+   los mazos que el benchmark mas desvia; los `#[ignore = "BUG: ..."]` son bugs conocidos (desde el step
+   2.4 queda solo Thieving Incisors, simplificacion a proposito). Resultado en `docs/cartas-sospechosas.md`
+   de tcgpocket.
 5. **Arreglos mandados upstream y todavia no integrados**, un commit cada uno, que se descartan en el
    rebase cuando upstream los trae:
    - Clear Veil / Crystal Body evitan el descarte de energia por ataques rivales (`fix/clear-veil`,
      PR bcollazo/deckgym-core#427).
+   - Dragon's Blessing de Dragonair solo une al activo [N] (`fix/dragons-blessing`, step 2.4; PR
+     pendiente de autorizacion).
 
 ## Estrategia y reglas del fork
 
@@ -103,8 +106,8 @@ humo de tcgpocket: `node scripts/simulate-events.mjs --event garchomp --num 20` 
 - `--stats-json`: general si se reemplaza el vocabulario de tareas de eventos por algo configurable.
 - Los coeficientes calibrables por JSON: util, pero `best.json` esta sobreajustado al top 10 del meta
   B4a de Limitless y no conviene mandarlo como default (ver `value_params/README.md`).
-- Los bugs de motor anotados en la auditoria del 2026-10-15 (Teary Attack de Bonsly, Boosted
-  Evolution de Eevee, Dragon's Blessing sin chequeo de tipo) conviene revisarlos contra upstream
-  antes de reportarlos: pueden estar arreglados despues de tantos commits.
+- Los bugs de motor anotados en la auditoria del 2026-10-15 ya estan resueltos (step 2.4, 2026-10-21):
+  Boosted Evolution de Eevee lo arreglo upstream (`66ec553`), Teary Attack de Bonsly tambien (#426,
+  entro con el rebase del 2026-10-21) y Dragon's Blessing va como `fix/dragons-blessing`.
 
 El motor es AGPL: cualquier cambio publicado en el fork tiene que seguir bajo esa licencia.

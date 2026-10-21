@@ -756,9 +756,6 @@ fn test_dragons_blessing_not_offered_from_active_or_with_empty_discard() {
 }
 
 #[test]
-#[ignore = "BUG: Dragon's Blessing is offered (and attaches) when the Active is not a [N] Pokémon; \
-            can_use_dragonair_dragons_blessing (src/move_generation/move_generation_abilities.rs:394) \
-            never checks the Active's type"]
 fn test_dragons_blessing_not_offered_when_active_is_not_dragon() {
     let mut game = get_test_game_with_board(
         vec![pc(CardId::A1001Bulbasaur), pc(CardId::B4117Dragonair)],

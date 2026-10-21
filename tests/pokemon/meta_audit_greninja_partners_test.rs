@@ -827,7 +827,6 @@ fn bonsly_teary_attack_reduction_lasts_only_opponents_next_turn() {
 }
 
 #[test]
-#[ignore = "BUG: Teary Attack is modelled as 'Bonsly takes -30' (CardEffect::ReducedDamage on the attacker, effect_mechanic_map.rs:472) instead of a debuff on the Defending Pokemon's attacks"]
 fn bonsly_teary_attack_reduces_the_defending_pokemon_even_against_another_target() {
     // "attacks used by the Defending Pokémon do -30 damage": the debuff is on the Defending
     // Pokémon. If Bonsly is switched out (opponent's Sabrina), the Defending Pokémon's attack on
@@ -862,7 +861,6 @@ fn bonsly_teary_attack_reduces_the_defending_pokemon_even_against_another_target
 }
 
 #[test]
-#[ignore = "BUG: Teary Attack is modelled as 'Bonsly takes -30' (CardEffect::ReducedDamage on the attacker, effect_mechanic_map.rs:472) instead of a debuff on the Defending Pokemon's attacks"]
 fn bonsly_teary_attack_does_not_protect_bonsly_from_a_different_attacker() {
     // The Defending Pokémon retreats; a different Pokémon (not affected by Teary Attack) attacks
     // Bonsly for its full 40 -> Bonsly (30 HP) is Knocked Out.
