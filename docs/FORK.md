@@ -50,7 +50,7 @@ lo manejan viven en tcgpocket (`scripts/README-deckgym.md`); aca solo estan los 
    - Clear Veil / Crystal Body evitan el descarte de energia por ataques rivales (`fix/clear-veil`,
      PR bcollazo/deckgym-core#427).
    - Dragon's Blessing de Dragonair solo une al activo [N] (`fix/dragons-blessing`, step 2.4; PR
-     pendiente de autorizacion).
+     bcollazo/deckgym-core#428).
 
 ## Estrategia y reglas del fork
 
