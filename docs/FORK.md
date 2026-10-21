@@ -14,7 +14,7 @@ lo manejan viven en tcgpocket (`scripts/README-deckgym.md`); aca solo estan los 
 
 ## Ramas
 
-- `work`: rama de trabajo. Es `upstream/main` mas dos commits propios (abajo). Es la que se compila y
+- `work`: rama de trabajo. Es `upstream/main` mas los commits propios (abajo). Es la que se compila y
   usa tcgpocket (`../deckgym-core/target/release/deckgym.exe`).
 - `backup/calibrate-value-2026-10`: la rama vieja `calibrate-value` tal cual estaba el 2026-10-18
   (basada en el commit 4e25889 de upstream, 1559 commits atras). Solo respaldo; no se toca.
@@ -30,7 +30,51 @@ lo manejan viven en tcgpocket (`scripts/README-deckgym.md`); aca solo estan los 
 2. **`simulate --stats-json <archivo>`** (`src/event_stats.rs`, `src/state/tally.rs`, ganchos en
    `apply_action_helpers.rs`): un registro por partida con KOs al activo por tipo, dano maximo de un
    ataque y Pokemon puestos en juego por fase. El formato es el que lee `runStats` en
-   `scripts/deckgym-lib.mjs` de tcgpocket: si se cambia aca, cambiarlo alla.
+   `scripts/deckgym-lib.mjs` de tcgpocket: si se cambia aca, cambiarlo alla. Desde `c972f98` tambien
+   cuenta por jugador las habilidades, ataques y entrenadores usados y los turnos en que cada
+   habilidad y ataque estaba disponible (`abilities`, `attacks`, `trainers`, `ability_turns`,
+   `attack_turns`; los lee `scripts/deckgym-card-audit.mjs --usage`).
+3. **Bots propios** (`src/players/own_*.rs`): `o<n>`, busqueda con la respuesta del rival (step 2.3, ver
+   `docs/search-design.md`).
+4. **Tests de auditoria de cartas** (`tests/pokemon/meta_audit_*_test.rs`, step 2.5): las 56 cartas de
+   los mazos que el benchmark mas desvia; los `#[ignore = "BUG: ..."]` son bugs conocidos (Teary Attack
+   y Dragon's Blessing van en el step 2.4). Resultado en `docs/cartas-sospechosas.md` de tcgpocket.
+5. **Arreglos mandados upstream y todavia no integrados**, un commit cada uno, que se descartan en el
+   rebase cuando upstream los trae:
+   - Clear Veil / Crystal Body evitan el descarte de energia por ataques rivales (`fix/clear-veil`,
+     PR bcollazo/deckgym-core#427).
+
+## Estrategia y reglas del fork
+
+Decision del 2026-10-18: las cartas, las reglas y las expansiones nuevas (por ejemplo el doble tipo de
+la expansion C) se toman de upstream, que implementa los sets en ~1-5 semanas con ~90 commits por mes.
+Nosotros no mantenemos el motor aparte: nuestros bots van por su cuenta y compiten contra los de
+deckgym. Para que eso sea cierto se siguen cuatro reglas:
+
+1. **Nuestros bots viven aparte.** Cada bot propio va en un archivo propio bajo `src/players/` (por
+   ejemplo `src/players/own_*.rs`), con codigos propios (`o<n>` y los que sigan) y una funcion de valor
+   propia. Nunca se modifican los jugadores de upstream (`r`, `w`, `aa`, `et`, `er`, `v`, `e<n>`, `m`)
+   ni su funcion de valor: tienen que seguir siendo la referencia contra la que medimos. Lo unico que
+   se toca de `src/players/` en un bot nuevo es `mod.rs`, para registrar el codigo.
+2. **Los bots no reimplementan reglas.** Danio, debilidad, tipos (incluido el doble tipo que viene) y
+   efectos se le preguntan al motor (aplicando la accion sobre una copia del estado, o con las
+   funciones que ya expone). Asi lo nuevo de upstream entra solo con cada rebase.
+3. **Los cambios genericos del motor se mandan upstream** como PR: bugs, cartas, arreglos de reglas.
+   Lo que se queda solo en el fork es lo que no le sirve a nadie mas (nuestros bots).
+4. **Si una carta clave del meta tarda en llegar**, se implementa en el fork en un commit aislado (un
+   commit por carta, sin mezclar con otra cosa) y se manda upstream; cuando upstream la trae, el
+   commit propio se descarta en el rebase.
+
+`node scripts/deckgym-fork-check.mjs` (en tcgpocket) hace cumplir la regla 1: lista los archivos que
+`work` toca respecto de `upstream/main` y falla si alguno es de los jugadores de upstream o de su
+funcion de valor. Hay una lista blanca al principio del script con las excepciones ya aceptadas.
+
+Excepcion heredada (no es el modelo a seguir): los cambios de `614ba4f` (funcion de valor calibrable
+por JSON, `v` que resuelve elecciones pendientes) tocan `value_function_player.rs` y `value_functions.rs`
+de upstream. Estan en la lista blanca porque ya estaban hechos antes de la regla; no se agregan mas
+cambios ahi, y la salida limpia es mandarlos upstream (ver abajo) o moverlos a un jugador propio.
+La escalera (`scripts/deckgym-ladder.mjs`) marca como referencia a los jugadores de upstream y compara
+el mejor nuestro contra el mejor de deckgym.
 
 ## Sincronizar con upstream
 
