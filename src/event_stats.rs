@@ -2,7 +2,8 @@
 //! Dragon-type attack", "Put 3 Basic Pokemon into play", "Do 100 damage with one attack", "Win by
 //! turn 14", "Win without the opponent getting any points"): one compact record per game, written
 //! as JSON by `simulate --stats-json <file>` so a caller can compute the share of games that meet
-//! any threshold.
+//! any threshold. It also counts, per player, the Abilities, attacks and Trainer cards used, so a
+//! caller can check how often a deck's key card is actually played.
 
 use serde::Serialize;
 use std::any;
@@ -11,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     actions::{Action, SimpleAction},
-    models::{Card, EnergyType},
+    models::{Card, EnergyType, PlayedCard},
     optimize::ParallelConfig,
     players::PlayerCode,
     simulate::print_stats,
@@ -44,6 +45,49 @@ pub struct PlayerGameStats {
     pub max_attack_damage: u16,
     /// Pokemon put into play: [Basic, Stage 1, Stage 2] (placed from hand or evolved).
     pub put_into_play: [u16; 3],
+    /// Abilities used, by "<Pokemon name> · <Ability name>".
+    pub abilities: BTreeMap<String, u16>,
+    /// Attacks used, by "<attacking Pokemon name> · <attack name>".
+    pub attacks: BTreeMap<String, u16>,
+    /// Trainer cards played from hand (Items, Supporters, Tools, Stadiums), by card name.
+    pub trainers: BTreeMap<String, u16>,
+    /// Own turns in which each Ability (same keys as `abilities`) could be used at least once,
+    /// whether or not it was: uses / turns tells a card the bot doesn't play from one it never has.
+    pub ability_turns: BTreeMap<String, u16>,
+    /// Own turns in which each attack (same keys as `attacks`) was offered.
+    pub attack_turns: BTreeMap<String, u16>,
+}
+
+/// What one player did during a game, reset at the start of each game.
+#[derive(Debug, Clone, Default)]
+struct PlayerUses {
+    put_into_play: [u16; 3],
+    abilities: BTreeMap<String, u16>,
+    attacks: BTreeMap<String, u16>,
+    trainers: BTreeMap<String, u16>,
+    ability_turns: BTreeMap<String, u16>,
+    attack_turns: BTreeMap<String, u16>,
+    /// Keys already counted in `ability_turns` / `attack_turns` this turn, and that turn.
+    offered_turn: u8,
+    offered: Vec<String>,
+}
+
+fn ability_key(pokemon: &PlayedCard) -> String {
+    let ability = pokemon.ability().map(|a| a.title).unwrap_or_default();
+    format!("{} · {ability}", pokemon.get_name())
+}
+
+fn attack_key(state: &State, actor: usize, title: &str) -> String {
+    let attacker = state
+        .maybe_get_active(actor)
+        .map(|p| p.get_name())
+        .unwrap_or_default();
+    format!("{attacker} · {title}")
+}
+
+fn bump(map: &mut BTreeMap<String, u16>, key: String) {
+    let count = map.entry(key).or_insert(0);
+    *count = count.saturating_add(1);
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,31 +102,74 @@ pub struct GameStats {
 /// Collects one `GameStats` per game.
 #[derive(Default)]
 pub struct EventStatsCollector {
-    put_into_play: [[u16; 3]; 2],
+    uses: [PlayerUses; 2],
     pub games: Vec<GameStats>,
 }
 
 impl SimulationEventHandler for EventStatsCollector {
     fn on_game_start(&mut self, _game_id: Uuid) {
-        self.put_into_play = [[0; 3]; 2];
+        self.uses = Default::default();
     }
 
     fn on_action(
         &mut self,
         _game_id: Uuid,
-        _state_before_action: &State,
+        state_before_action: &State,
         actor: usize,
-        _playable_actions: &[Action],
+        playable_actions: &[Action],
         action: &Action,
     ) {
+        let uses = &mut self.uses[actor];
+        if actor == state_before_action.current_player {
+            if uses.offered_turn != state_before_action.turn_count {
+                uses.offered_turn = state_before_action.turn_count;
+                uses.offered.clear();
+            }
+            for playable in playable_actions {
+                let (key, turns) = match &playable.action {
+                    SimpleAction::UseAbility { in_play_idx } => {
+                        match &state_before_action.in_play_pokemon[actor][*in_play_idx] {
+                            Some(p) => (ability_key(p), &mut uses.ability_turns),
+                            None => continue,
+                        }
+                    }
+                    SimpleAction::Attack(attack) => (
+                        attack_key(state_before_action, actor, &attack.title),
+                        &mut uses.attack_turns,
+                    ),
+                    _ => continue,
+                };
+                if !uses.offered.contains(&key) {
+                    bump(turns, key.clone());
+                    uses.offered.push(key);
+                }
+            }
+        }
         let card = match &action.action {
             SimpleAction::Place(card, _) => card,
             SimpleAction::Evolve { evolution, .. } => evolution,
+            SimpleAction::UseAbility { in_play_idx } => {
+                if let Some(pokemon) = &state_before_action.in_play_pokemon[actor][*in_play_idx] {
+                    bump(&mut uses.abilities, ability_key(pokemon));
+                }
+                return;
+            }
+            SimpleAction::Attack(attack) => {
+                bump(
+                    &mut uses.attacks,
+                    attack_key(state_before_action, actor, &attack.title),
+                );
+                return;
+            }
+            SimpleAction::Play { trainer_card } => {
+                bump(&mut uses.trainers, trainer_card.name.clone());
+                return;
+            }
             _ => return,
         };
         if let Card::Pokemon(pokemon) = card {
             let stage = (pokemon.stage as usize).min(2);
-            self.put_into_play[actor][stage] += 1;
+            uses.put_into_play[stage] += 1;
         }
     }
 
@@ -97,7 +184,12 @@ impl SimulationEventHandler for EventStatsCollector {
                 })
                 .collect(),
             max_attack_damage: state.tally.max_attack_damage(p),
-            put_into_play: self.put_into_play[p],
+            put_into_play: self.uses[p].put_into_play,
+            abilities: self.uses[p].abilities.clone(),
+            attacks: self.uses[p].attacks.clone(),
+            trainers: self.uses[p].trainers.clone(),
+            ability_turns: self.uses[p].ability_turns.clone(),
+            attack_turns: self.uses[p].attack_turns.clone(),
         };
         self.games.push(GameStats {
             winner: match outcome {
