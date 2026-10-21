@@ -45,6 +45,20 @@ impl TurnCompletionPlayer {
         }
     }
 
+    /// El puntaje de cada accion: valor esperado al final de mi turno
+    pub(crate) fn completed_scores(
+        &self,
+        rng: &mut StdRng,
+        state: &State,
+        actions: &[Action],
+        myself: usize,
+    ) -> Vec<f64> {
+        actions
+            .iter()
+            .map(|action| self.completed_value(rng, state, action, myself))
+            .collect()
+    }
+
     /// Valor esperado (para `myself`) de jugar `action` y completar mi turno
     fn completed_value(
         &self,
@@ -153,10 +167,7 @@ impl Player for TurnCompletionPlayer {
                 &self.value_function,
             )
         } else {
-            possible_actions
-                .iter()
-                .map(|action| self.completed_value(rng, state, action, myself))
-                .collect()
+            self.completed_scores(rng, state, possible_actions, myself)
         };
 
         log::set_max_level(original_level);

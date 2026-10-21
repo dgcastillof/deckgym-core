@@ -7,6 +7,8 @@ mod human_player;
 mod mcts_player;
 mod own_reply_player;
 mod own_turn_player;
+mod own_two_turn_player;
+pub mod own_value;
 mod random_player;
 mod value_function_player;
 pub mod value_functions;
@@ -21,6 +23,7 @@ pub use human_player::HumanPlayer;
 pub use mcts_player::MctsPlayer;
 pub use own_reply_player::OpponentReplyPlayer;
 pub use own_turn_player::TurnCompletionPlayer;
+pub use own_two_turn_player::TwoTurnPlayer;
 pub use random_player::RandomPlayer;
 pub use value_function_player::ValueFunctionPlayer;
 pub use value_functions::*;
@@ -80,6 +83,14 @@ pub enum PlayerCode {
     T {
         max_depth: usize,
     },
+    /// t<max_depth> con la funcion de valor propia de preparacion (`DECKGYM_PREP_PARAMS`)
+    P {
+        max_depth: usize,
+    },
+    /// t<max_depth> que re-puntua sus mejores jugadas jugando dos turnos propios
+    D {
+        max_depth: usize,
+    },
     /// An external bot, spoken to over stdin/stdout (see `docs/bot-protocol.md`). The command to
     /// run comes from `--bot-a`/`--bot-b`, not from the code itself — `create_players` panics if
     /// asked to build an `X` player; use `create_players_with_bots`.
@@ -103,6 +114,8 @@ pub fn parse_player_code(s: &str) -> Result<PlayerCode, String> {
         "x" => return Ok(PlayerCode::X),
         "o" => return Ok(PlayerCode::O { max_depth: 2 }),
         "t" => return Ok(PlayerCode::T { max_depth: 2 }),
+        "p" => return Ok(PlayerCode::P { max_depth: 2 }),
+        "d" => return Ok(PlayerCode::D { max_depth: 2 }),
         _ => {}
     }
 
@@ -120,6 +133,20 @@ pub fn parse_player_code(s: &str) -> Result<PlayerCode, String> {
             return Ok(PlayerCode::T { max_depth });
         }
         return Err(format!("Invalid player code: {s}. Use 't<number>' for TurnCompletion with depth, e.g., 't2', 't3'"));
+    }
+
+    if let Some(rest) = lower.strip_prefix('p') {
+        if let Ok(max_depth) = rest.parse::<usize>() {
+            return Ok(PlayerCode::P { max_depth });
+        }
+        return Err(format!("Invalid player code: {s}. Use 'p<number>' for TurnCompletion with the preparation value function, e.g., 'p2'"));
+    }
+
+    if let Some(rest) = lower.strip_prefix('d') {
+        if let Ok(max_depth) = rest.parse::<usize>() {
+            return Ok(PlayerCode::D { max_depth });
+        }
+        return Err(format!("Invalid player code: {s}. Use 'd<number>' for TwoTurn with depth, e.g., 'd2'"));
     }
 
     // 'e' followed by digits (e.g., e2, e4) is ExpectiMiniMax with that depth
@@ -179,6 +206,16 @@ fn get_player(deck: Deck, player: &PlayerCode) -> Box<dyn Player> {
         PlayerCode::ER => Box::new(EvolutionRusherPlayer { deck }),
         PlayerCode::O { max_depth } => Box::new(OpponentReplyPlayer::new(deck, *max_depth)),
         PlayerCode::T { max_depth } => Box::new(TurnCompletionPlayer::new(deck, *max_depth)),
+        PlayerCode::P { max_depth } => Box::new(TurnCompletionPlayer {
+            deck,
+            max_depth: (*max_depth).max(1),
+            value_function: Box::new(own_value::loaded_prep_value_function),
+        }),
+        PlayerCode::D { max_depth } => Box::new(TwoTurnPlayer::new(
+            deck,
+            *max_depth,
+            Box::new(value_functions::loaded_value_function),
+        )),
         PlayerCode::X => panic!(
             "PlayerCode::X (external bot) has no command to run; use create_players_with_bots \
              (the CLI's --bot-a/--bot-b flags) instead of create_players"

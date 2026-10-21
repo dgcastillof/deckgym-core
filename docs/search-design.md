@@ -215,3 +215,80 @@ que o2 cambiaba respecto de e2 venia sobre todo de completar el turno, no de ver
 
 Conclusion: t2 es el bot mas fuerte y el mas barato de los nuestros, pero como o2 no acerca la
 simulacion a los humanos. El desvio de los mazos de Greninja no venia del shuriken perdido.
+
+# Preparar a varios turnos (jugadores `p<n>` y `d<n>`)
+
+Step 2.9 del roadmap de simulacion de tcgpocket.
+
+## Diagnostico
+
+`simulate --stats-json` registra ahora el primer turno en que se ofrecio cada ataque
+(`attack_first_turn`) y, con `DECKGYM_STATS_TURNS=1`, el tablero y la mano al final de cada turno
+propio (`turn_ends`). `scripts/deckgym-card-audit.mjs --usage --turns` (en tcgpocket) lo resume por
+atacante principal. Con t2 y `step-2-2.json`, 100 partidas de cada uno de los 8 mazos del step 2.5
+contra el #1 (energia de Limitless, step 2.8):
+
+- Todos los atacantes principales atacan por primera vez 1.3 a 2.8 turnos propios despues de lo mas
+  temprano posible (2 si empieza segundo, 3 si empieza primero, para un ataque de dos energias),
+  tambien los mazos lineales (Mega Lucario ex 1.4, Mega Manectric ex 1.9).
+- Antes de ese turno, lo que mas falta es la evolucion (50-65% de los turnos en los mazos con Mega
+  de fase 1 o 2), casi siempre porque la carta no esta o el basico entro ese turno: el bot evoluciona
+  cuando puede (pudo y no lo hizo en 1-6% de esos turnos; Mega Sceptile ex 23%, el paso a Grovyle).
+- "Energia desviada" (turnos en que, con la energia del turno en la linea, el atacante atacaba el
+  siguiente): 0.1-0.2 por partida, salvo Mega Rayquaza ex (0.6, zona de dos tipos). Lo que se puede
+  arreglar planificando es chico.
+
+El sesgo concreto que aparecio: `turns_until_opponent_wins` (funcion de valor de upstream) toma como
+amenaza el ataque al que menos energia le falta, aunque pegue poco. Unirle la [G] a un Treecko vuelve
+a Pound (20) la amenaza y los turnos para ganar saltan, por ejemplo, de 2 a 6: con el coeficiente de
+100, cargar al basico de la linea cuesta 400 puntos.
+
+## `p<n>`: funcion de valor de preparacion
+
+t<n> con `own_value::loaded_prep_value_function`: la de upstream mas `prep_damage` (dano que cada
+Pokemon va a poder hacer con las evoluciones de la mano, Rare Candy y la energia que le falta,
+descontado por turnos) y `turns_to_win` (reemplaza a `turns_until_opponent_wins` eligiendo la amenaza
+que noquea antes, contando los turnos que tarda cada forma). Coeficientes y detalle en
+`value_params/README.md`. Cuesta ~1.2 veces t2 por partida.
+
+## `d<n>`: dos turnos propios
+
+t<n> puntua todas las jugadas; las `top` mejores se re-puntuan con `samples` determinizaciones como
+o<n>: el resto de mi turno con la busqueda que le quedaba a t<n>, el turno del rival con su greedy,
+mi turno siguiente con una busqueda de profundidad `next_depth` (con greedy no encuentra "retirar y
+atacar con el que se preparo") y se evalua cuando le vuelve a tocar al rival. Variables:
+`DECKGYM_TWO_SAMPLES` (2), `DECKGYM_TWO_TOP` (3), `DECKGYM_TWO_DEPTH` (2). La funcion de valor es la de
+`DECKGYM_VALUE_PARAMS`.
+
+## Mediciones (p<n> y d<n>)
+
+Tests (`cargo test --lib own_`): en la posicion del Treecko que entro este turno con Rare Candy y Mega
+Sceptile ex en la mano, Furfrou (Sharp Fang, [C][C]) activo con [G] y un Chansey de 120 PS, t2 une la
+[G] a Furfrou y ataca (50 ahora y 50 despues no noquean) y p2 se la une al Treecko (y retira a Furfrou
+para que el Rare Candy del turno que viene caiga sobre el activo: 20 + 130 noquean); si el activo ya
+ataca, p2 carga al Treecko; los turnos para ganar cuentan a Mega Sceptile ex del turno que viene; la
+mano rival no se usa. d2 en la posicion de Sharp Fang ataca, como t2: el plan de cinco acciones del
+turno siguiente no sale en suficientes muestras.
+
+Uso (`deckgym-card-audit.mjs --usage --turns --num 100`, t2 contra p2 con `step-2-2.json`): la energia
+desviada baja (Mega Blaziken ex 0.18 -> 0.03, Mega Altaria ex 0.19 -> 0.07, Mega Rayquaza ex 0.60 ->
+0.14 turnos por partida) y el primer ataque de Mega Blaziken ex llega medio turno antes; los turnos por
+partida en que pueden atacar casi no cambian.
+
+Escalera (meta del 19/10, 6 mazos espejo, `step-2-2.json`):
+
+| Cara a cara | Winrate del primero | IC 95% | ms por partida (los dos jugadores) | Partidas |
+| --- | --- | --- | --- | --- |
+| p2 vs t2 | 54.2% | 52.3-56.2% | 348 | 2400 |
+| d2 vs t2 | 50.7% | 45.0-56.3% | 1649 | 300 |
+
+Costo en un espejo de Mega Sceptile ex + Greninja (24 partidas, tiempo de pared): t2 290 ms, p2 357 ms,
+d2 3.4 s con los defaults; 1.7 s con greedy en el turno siguiente y 0.7 s con greedy, 1 muestra y 2
+candidatas.
+
+Benchmark top 20 (`--players p2,p2`, meta del 19/10, `step-2-2.json` + `prep.json`): Pearson 0.405,
+MAE 12.0 pp, contra 0.454 y 12.3 pp de t2 (diferencia -0.049, IC 95% bootstrap -0.142 a +0.024).
+
+Conclusion: p2 es el bot mas fuerte de los nuestros y corrige el sesgo de `turns_until_opponent_wins`,
+pero no acerca la simulacion a los humanos. Con la energia del step 2.8, lo que queda del desvio no
+viene de no planificar la linea. d2 no rinde lo que cuesta; queda registrado para relevarlo.

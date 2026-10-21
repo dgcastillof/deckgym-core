@@ -1,0 +1,710 @@
+// Funcion de valor propia con features de preparacion (step 2.9, ver docs/search-design.md).
+//
+// La de upstream (`parametric_value_function` con `DECKGYM_VALUE_PARAMS`) no ve lo que un Pokemon
+// va a poder hacer cuando evolucione: un Treecko con [G] y Rare Candy + Mega Sceptile ex en la mano
+// vale lo que vale Pound (20). Y `turns_until_opponent_wins` toma como amenaza el ataque al que
+// menos energia le falta aunque pegue poco: unirle la [G] al Treecko vuelve a Pound la amenaza y
+// los turnos para ganar pasan, por ejemplo, de 2 a 6, asi que cargar a un basico de la linea
+// parece peor que no hacer nada. Esta funcion le suma a la de upstream dos terminos, con
+// coeficientes en un JSON aparte (`DECKGYM_PREP_PARAMS`) y sin tocar los de upstream:
+//
+// - `prep_damage`: por cada Pokemon en juego, el dano del mejor ataque que va a poder hacer con las
+//   evoluciones que tiene en la mano (o en el mazo, con menos peso) y la energia que le falta,
+//   descontado por los turnos que tarda en llegar.
+// - `turns_to_win`: reemplaza a `turns_until_opponent_wins` (mismo calculo de KOs al activo y a la
+//   banca hasta 3 puntos) eligiendo la amenaza que gana mas rapido, contando los turnos que le
+//   faltan a cada forma: energia, evolucion en la mano o Rare Candy.
+//
+// Las cartas en la mano solo se usan para el jugador desde cuyo punto de vista se evalua: la mano
+// rival es informacion oculta (para el rival cuentan las evoluciones de su mano y su mazo juntos,
+// con el peso del mazo, y en `turns_to_win` solo la forma que tiene en juego).
+
+use std::sync::OnceLock;
+
+use serde::{Deserialize, Serialize};
+
+use crate::actions::expected_attack_damage;
+use crate::card_logic::can_rare_candy_evolve;
+use crate::hooks::energy_missing;
+use crate::models::{Attack, Card, EnergyType, PlayedCard};
+use crate::State;
+
+use super::value_functions::{parametric_value_function, ValueFunctionParams};
+
+/// Ruta a un JSON de [`PrepParams`] para los jugadores con la funcion de valor propia (`p<n>`)
+pub const PREP_PARAMS_ENV: &str = "DECKGYM_PREP_PARAMS";
+
+/// Turnos para ganar cuando ninguna amenaza hace dano (el mismo valor que usa upstream)
+const NO_THREAT_TURNS: f64 = 30.0;
+
+/// Coeficientes de las features de preparacion. Con `prep_damage` y `turns_to_win` en 0 la funcion
+/// de valor es la de upstream tal cual.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PrepParams {
+    /// Por punto de dano que cada Pokemon en juego va a poder hacer (ver [`analyze`]), mio menos
+    /// el del rival.
+    pub prep_damage: f64,
+    /// Por turno: si no es 0, reemplaza al coeficiente `turns_until_opponent_wins` de upstream
+    /// (que queda en 0) por este, con los turnos para ganar de la amenaza mas rapida (ver
+    /// [`analyze`]): los turnos hasta que gana el rival menos los turnos hasta que gano yo.
+    pub turns_to_win: f64,
+    /// Factor por cada turno de mas que tarda en poder atacar (el turno que viene no se descuenta).
+    pub turn_discount: f64,
+    /// Peso de los Pokemon de la banca en `prep_damage` (el activo pesa 1).
+    pub bench: f64,
+    /// Peso de una evolucion que esta en el mazo y no en la mano (hay que robarla).
+    pub deck_evolution: f64,
+    /// Turnos propios que se miran hacia adelante como maximo.
+    pub max_turns: usize,
+}
+
+impl Default for PrepParams {
+    fn default() -> Self {
+        Self {
+            prep_damage: 0.0,
+            turns_to_win: 0.0,
+            turn_discount: 0.5,
+            bench: 0.5,
+            deck_evolution: 0.25,
+            max_turns: 3,
+        }
+    }
+}
+
+impl PrepParams {
+    pub fn from_json_file(path: &str) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+        serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))
+    }
+
+    /// Los de `DECKGYM_PREP_PARAMS`, o los default (sin preparacion) si no esta. Se lee una vez
+    /// por proceso; un archivo invalido aborta, como `DECKGYM_VALUE_PARAMS`.
+    pub fn loaded() -> &'static Self {
+        static LOADED: OnceLock<PrepParams> = OnceLock::new();
+        LOADED.get_or_init(|| match std::env::var(PREP_PARAMS_ENV) {
+            Ok(path) if !path.is_empty() => Self::from_json_file(&path)
+                .unwrap_or_else(|e| panic!("Invalid {PREP_PARAMS_ENV}: {e}")),
+            _ => Self::default(),
+        })
+    }
+}
+
+/// La funcion de valor de upstream con los coeficientes cargados mas la preparacion de
+/// `DECKGYM_PREP_PARAMS`
+pub fn loaded_prep_value_function(state: &State, myself: usize) -> f64 {
+    prep_value_function(
+        state,
+        myself,
+        ValueFunctionParams::loaded(),
+        PrepParams::loaded(),
+    )
+}
+
+pub fn prep_value_function(
+    state: &State,
+    myself: usize,
+    params: &ValueFunctionParams,
+    prep: &PrepParams,
+) -> f64 {
+    if prep.prep_damage == 0.0 && prep.turns_to_win == 0.0 {
+        return parametric_value_function(state, myself, params);
+    }
+    let mut upstream = *params;
+    if prep.turns_to_win != 0.0 {
+        upstream.turns_until_opponent_wins = 0.0;
+    }
+    let base = parametric_value_function(state, myself, &upstream);
+    let opponent = (myself + 1) % 2;
+    let mut scratch = None;
+    let mine = analyze(state, myself, myself, prep, &mut scratch);
+    let theirs = analyze(state, opponent, myself, prep, &mut scratch);
+    base + prep.prep_damage * (mine.damage - theirs.damage)
+        + prep.turns_to_win * (theirs.turns_to_win - mine.turns_to_win)
+}
+
+/// Lo que `player` puede llegar a hacer contra el otro jugador
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Outlook {
+    /// Suma, por cada Pokemon en juego (la banca pesa `bench`), del mejor
+    /// `peso * dano * turn_discount^(turnos - 1)` entre sus formas y ataques
+    pub damage: f64,
+    /// Turnos hasta que `player` gana con su amenaza mas rapida
+    pub turns_to_win: f64,
+}
+
+/// Una forma a la que puede llegar un Pokemon en juego: la carta, en cuantos turnos propios puede
+/// evolucionar a ella (0 = ya la tiene) y el peso (1 si es segura, `deck_evolution` si hay que
+/// robarla)
+struct Form {
+    card: Card,
+    evolve_turns: usize,
+    weight: f64,
+}
+
+/// Una amenaza para `turns_to_win`: el Pokemon de `idx` con `form`, que ataca con `attack` (con la
+/// energia `fill` que le falta) y hace `damage` al activo rival
+struct Threat {
+    idx: usize,
+    form: Card,
+    attack: Attack,
+    fill: Vec<EnergyType>,
+    damage: f64,
+}
+
+/// Recorre las formas y ataques de los Pokemon en juego de `player`. Turnos de una forma = los
+/// turnos propios hasta poder atacar con ella (al menos 1, el que viene; uno por energia que falta
+/// y uno por paso de evolucion, que pueden ir en paralelo; una energia de un tipo que la zona del
+/// mazo no genera no llega nunca). Dano = el que calcula el motor contra el activo rival con esa
+/// forma y esa energia. `viewer` es desde quien se evalua: solo de el se mira la mano.
+pub(crate) fn analyze(
+    state: &State,
+    player: usize,
+    viewer: usize,
+    prep: &PrepParams,
+    scratch: &mut Option<State>,
+) -> Outlook {
+    let defender = (player + 1) % 2;
+    let cap = state
+        .enumerate_in_play_pokemon(defender)
+        .map(|(_, card)| card.get_remaining_hp() as f64)
+        .fold(0.0, f64::max);
+    let mut zone: Vec<EnergyType> = state.decks[player].energy_types().to_vec();
+    zone.sort();
+    zone.dedup();
+    let in_play: Vec<(usize, PlayedCard)> = state
+        .enumerate_in_play_pokemon(player)
+        .map(|(idx, pokemon)| (idx, pokemon.clone()))
+        .collect();
+    let target_hp = state
+        .maybe_get_active(defender)
+        .map(|active| active.get_remaining_hp() as f64);
+
+    let mut damage = 0.0;
+    // La amenaza que primero noquea al activo rival: (turnos hasta el KO, -dano) mas chico
+    let mut best: Option<(f64, Threat)> = None;
+    for (idx, pokemon) in in_play {
+        let mut best_value: f64 = 0.0;
+        for form in forms(state, player, viewer, &pokemon, prep.deck_evolution) {
+            let mut as_form = pokemon.clone();
+            as_form.card = form.card.clone();
+            for attack in form.card.get_attacks() {
+                let missing = energy_missing(&as_form, &attack.energy_required, state, player);
+                let Some(fill) = fill_from_zone(&missing, &zone) else {
+                    continue;
+                };
+                let turns = form.evolve_turns.max(fill.len()).max(1);
+                if turns > prep.max_turns {
+                    continue;
+                }
+                let hit = price(state, scratch, player, idx, &form.card, &attack, &fill, 0);
+                if cap > 0.0 {
+                    let value = form.weight
+                        * hit.min(cap)
+                        * prep.turn_discount.powi(turns as i32 - 1);
+                    best_value = best_value.max(value);
+                }
+                // En turns_to_win solo cuentan las formas seguras (en juego o en la mano propia)
+                if let (Some(hp), true) = (target_hp, form.weight == 1.0 && hit > 0.0) {
+                    let to_ko = (turns - 1) as f64 + (hp / hit).ceil();
+                    let better = best.as_ref().is_none_or(|(t, b)| {
+                        to_ko < *t || (to_ko == *t && hit > b.damage)
+                    });
+                    if better {
+                        let threat = Threat {
+                            idx,
+                            form: form.card.clone(),
+                            attack: attack.clone(),
+                            fill: fill.clone(),
+                            damage: hit,
+                        };
+                        best = Some((to_ko, threat));
+                    }
+                }
+            }
+        }
+        damage += if idx == 0 {
+            best_value
+        } else {
+            prep.bench * best_value
+        };
+    }
+    let turns_to_win = if prep.turns_to_win == 0.0 {
+        0.0
+    } else {
+        turns_to_win(state, player, best, scratch)
+    };
+    Outlook {
+        damage,
+        turns_to_win,
+    }
+}
+
+/// Como `calculate_turns_until_opponent_wins` de upstream, desde el lado del atacante y con la
+/// amenaza ya elegida: los turnos hasta noquear al activo rival (`to_ko`, que ya cuenta los que tarda
+/// en poder atacar) y despues a los de la banca (el que mas aguanta por punto que da, o el de mas HP
+/// si falta un punto) hasta llegar a 3 puntos.
+fn turns_to_win(
+    state: &State,
+    player: usize,
+    best: Option<(f64, Threat)>,
+    scratch: &mut Option<State>,
+) -> f64 {
+    let defender = (player + 1) % 2;
+    let Some((to_ko, threat)) = best else {
+        return NO_THREAT_TURNS;
+    };
+    let mut total = to_ko;
+    let mut points = state.points[player];
+    if let Some(active) = state.maybe_get_active(defender) {
+        points += active.card.get_knockout_points();
+    }
+    let mut bench_damage: [Option<f64>; 4] = [None; 4];
+    while points < 3 {
+        let safest = state.enumerate_bench_pokemon(defender).max_by_key(|(_, card)| {
+            if points == 2 {
+                card.get_remaining_hp()
+            } else {
+                let ko_points = card.card.get_knockout_points().max(1) as u32;
+                card.get_remaining_hp() * 1000 / ko_points
+            }
+        });
+        let Some((bench_idx, target)) = safest else {
+            break;
+        };
+        let hit = *bench_damage[bench_idx].get_or_insert_with(|| {
+            price(
+                state,
+                scratch,
+                player,
+                threat.idx,
+                &threat.form,
+                &threat.attack,
+                &threat.fill,
+                bench_idx,
+            )
+        });
+        if hit <= 0.0 {
+            return NO_THREAT_TURNS;
+        }
+        total += (target.get_remaining_hp() as f64 / hit).ceil();
+        points += target.card.get_knockout_points();
+    }
+    total
+}
+
+/// Las formas de `pokemon`: la actual; cada evolucion de la mano (y de Rare Candy si esta en la
+/// mano), a un turno, o a dos si es fase 2 sin Rare Candy pero con la fase 1 en la mano; y las del
+/// mazo con peso `deck_weight`. Para el rival (que no es `viewer`) su mano no se conoce: sus
+/// evoluciones salen de la mano y el mazo juntos, con peso `deck_weight`. La legalidad se le
+/// pregunta al motor (`can_evolve_into`, `can_rare_candy_evolve`); que el Pokemon haya entrado este
+/// turno no importa, porque evoluciona el turno que viene.
+fn forms(
+    state: &State,
+    player: usize,
+    viewer: usize,
+    pokemon: &PlayedCard,
+    deck_weight: f64,
+) -> Vec<Form> {
+    let mut out = vec![Form {
+        card: pokemon.card.clone(),
+        evolve_turns: 0,
+        weight: 1.0,
+    }];
+    let mut settled = pokemon.clone();
+    settled.played_this_turn = false;
+    let hand = &state.hands[player];
+    let deck = &state.decks[player].cards;
+    let candy = player == viewer
+        && hand
+            .iter()
+            .any(|card| matches!(card, Card::Trainer(t) if t.name == "Rare Candy"));
+    let pools: Vec<(Vec<&Card>, f64)> = if player == viewer {
+        vec![
+            (hand.iter().collect(), 1.0),
+            (deck.iter().collect(), deck_weight),
+        ]
+    } else {
+        vec![(hand.iter().chain(deck.iter()).collect(), deck_weight)]
+    };
+    for (cards, weight) in pools {
+        if weight == 0.0 {
+            continue;
+        }
+        for card in cards.iter().copied() {
+            if !matches!(card, Card::Pokemon(_)) || out.iter().any(|f| f.card == *card) {
+                continue;
+            }
+            let turns = if pokemon.card.can_evolve_into(card) {
+                1
+            } else if can_rare_candy_evolve(card, &settled) {
+                // Fase 2 desde el basico: con Rare Candy en la mano en un turno, si no por la fase 1
+                let via_stage1 = cards
+                    .iter()
+                    .any(|s1| pokemon.card.can_evolve_into(s1) && s1.can_evolve_into(card));
+                if candy && weight == 1.0 {
+                    1
+                } else if via_stage1 || weight < 1.0 {
+                    2
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            };
+            out.push(Form {
+                card: card.clone(),
+                evolve_turns: turns,
+                weight,
+            });
+        }
+    }
+    out
+}
+
+/// La energia de la zona que paga `missing` (lo que devuelve `energy_missing`): los tipos tal cual
+/// y los incoloros con el primer tipo de la zona. None si falta un tipo que la zona no genera.
+fn fill_from_zone(missing: &[EnergyType], zone: &[EnergyType]) -> Option<Vec<EnergyType>> {
+    let mut fill = Vec::with_capacity(missing.len());
+    for energy in missing {
+        if *energy == EnergyType::Colorless {
+            fill.push(*zone.first()?);
+        } else if zone.contains(energy) {
+            fill.push(*energy);
+        } else {
+            return None;
+        }
+    }
+    Some(fill)
+}
+
+/// Dano esperado de `attack` de `form` en el lugar `idx` de `player`, con `extra` energia de mas,
+/// contra el Pokemon rival en `defender_idx`: se le pregunta al motor sobre una copia del estado
+/// (una por evaluacion, compartida) con ese Pokemon cambiado y los dos puestos de activos. Si el
+/// motor no lo puede calcular, el dano impreso.
+#[allow(clippy::too_many_arguments)]
+fn price(
+    state: &State,
+    scratch: &mut Option<State>,
+    player: usize,
+    idx: usize,
+    form: &Card,
+    attack: &Attack,
+    extra: &[EnergyType],
+    defender_idx: usize,
+) -> f64 {
+    let printed = attack.fixed_damage as f64;
+    let defender = (player + 1) % 2;
+    let scratch = scratch.get_or_insert_with(|| state.clone());
+    let Some(pokemon) = scratch.in_play_pokemon[player][idx].as_mut() else {
+        return printed;
+    };
+    let original_card = std::mem::replace(&mut pokemon.card, form.clone());
+    let attached = pokemon.attached_energy.len();
+    pokemon.attached_energy.extend_from_slice(extra);
+    let current = scratch.current_player;
+    scratch.current_player = player;
+    scratch.in_play_pokemon[player].swap(0, idx);
+    scratch.in_play_pokemon[defender].swap(0, defender_idx);
+    let damage = expected_attack_damage(scratch, attack).unwrap_or(printed);
+    scratch.in_play_pokemon[defender].swap(0, defender_idx);
+    scratch.in_play_pokemon[player].swap(0, idx);
+    scratch.current_player = current;
+    if let Some(pokemon) = scratch.in_play_pokemon[player][idx].as_mut() {
+        pokemon.card = original_card;
+        pokemon.attached_energy.truncate(attached);
+    }
+    damage
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::actions::{apply_action, SimpleAction};
+    use crate::card_ids::CardId;
+    use crate::database::get_card_by_enum;
+    use crate::players::{Player, TurnCompletionPlayer, TwoTurnPlayer};
+    use crate::test_support::get_test_game_with_board;
+    use crate::Deck;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+
+    /// Los coeficientes de value_params/step-2-2.json
+    pub(crate) fn step_2_2_params() -> ValueFunctionParams {
+        ValueFunctionParams {
+            real_damage: true,
+            energy_damage: 2.0,
+            active_pokemon_online_score: 0.0,
+            active_damage: 1.0,
+            ..ValueFunctionParams::baseline()
+        }
+    }
+
+    /// Los de value_params/prep.json
+    pub(crate) fn prep_params() -> PrepParams {
+        PrepParams::from_json_file("value_params/prep.json").unwrap()
+    }
+
+    fn step_2_2(state: &State, myself: usize) -> f64 {
+        parametric_value_function(state, myself, &step_2_2_params())
+    }
+
+    fn step_2_2_prep(state: &State, myself: usize) -> f64 {
+        prep_value_function(state, myself, &step_2_2_params(), &prep_params())
+    }
+
+    pub(crate) fn t2() -> TurnCompletionPlayer {
+        TurnCompletionPlayer {
+            deck: Deck::default(),
+            max_depth: 2,
+            value_function: Box::new(step_2_2),
+        }
+    }
+
+    pub(crate) fn p2() -> TurnCompletionPlayer {
+        TurnCompletionPlayer {
+            deck: Deck::default(),
+            max_depth: 2,
+            value_function: Box::new(step_2_2_prep),
+        }
+    }
+
+    pub(crate) fn d2() -> TwoTurnPlayer {
+        let mut player = TwoTurnPlayer::new(Deck::default(), 2, Box::new(step_2_2));
+        player.samples = 2;
+        player.top = 3;
+        player.next_depth = 2;
+        player
+    }
+
+    /// Mi turno 3 (el segundo mio) con zona de energia Grass y la [G] de este turno por unir,
+    /// `hand` en la mano y la mano rival vacia
+    pub(crate) fn prep_state(
+        mine: Vec<PlayedCard>,
+        hand: &[CardId],
+        theirs: Vec<PlayedCard>,
+    ) -> State {
+        let game = get_test_game_with_board(mine, theirs);
+        let mut state = game.get_state_clone();
+        state.hands[0] = hand.iter().map(|id| get_card_by_enum(*id)).collect();
+        state.hands[1].clear();
+        state.move_generation_stack.clear();
+        state.energy_zone[0].current = Some(EnergyType::Grass);
+        state.decks[0].energy_types = vec![EnergyType::Grass];
+        state
+    }
+
+    /// Juega el turno de player 0 con `player`: el estado al pasar el turno y si ataco
+    pub(crate) fn play_turn(player: &mut dyn Player, mut state: State, seed: u64) -> (State, bool) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let turn = state.turn_count;
+        let mut attacked = false;
+        while !state.is_game_over() && state.current_player == 0 && state.turn_count == turn {
+            let (actor, actions) = state.generate_possible_actions();
+            let action = if actions.len() == 1 || actor != 0 {
+                actions[0].clone()
+            } else {
+                player.decision_fn(&mut rng, &state, &actions)
+            };
+            attacked |= matches!(action.action, SimpleAction::Attack(_));
+            apply_action(&mut rng, &mut state, &action);
+        }
+        (state, attacked)
+    }
+
+    pub(crate) fn board(state: &State) -> Vec<String> {
+        state
+            .enumerate_in_play_pokemon(0)
+            .map(|(_, p)| format!("{}{:?}", p.get_name(), p.attached_energy))
+            .collect()
+    }
+
+    pub(crate) fn energy_on(state: &State, name: &str) -> usize {
+        state
+            .enumerate_in_play_pokemon(0)
+            .filter(|(_, p)| p.get_name() == name)
+            .map(|(_, p)| p.attached_energy.len())
+            .sum()
+    }
+
+    fn has(state: &State, name: &str) -> bool {
+        state
+            .enumerate_in_play_pokemon(0)
+            .any(|(_, p)| p.get_name() == name)
+    }
+
+    /// `active` con [G] y un Treecko que entro a la banca este turno (Rare Candy recien el que
+    /// viene); en la mano Rare Candy y Mega Sceptile ex; el rival tiene un Chansey de 120 PS sin
+    /// energia ni banca.
+    pub(crate) fn candy_state(active: CardId) -> State {
+        let mut treecko = PlayedCard::from_id(CardId::B3005Treecko);
+        treecko.played_this_turn = true;
+        prep_state(
+            vec![
+                PlayedCard::from_id(active).with_energy(vec![EnergyType::Grass]),
+                treecko,
+            ],
+            &[CardId::A3144RareCandy, CardId::B3008MegaSceptileEx],
+            vec![PlayedCard::from_id(CardId::A1202Chansey)],
+        )
+    }
+
+    // Furfrou (B1 206) activo con [G] y Sharp Fang ([C][C], 50): unir la [G] al activo le deja
+    // atacar ya. Atacar ahora y el turno que viene suma 100 y no noquea al Chansey; cargar al
+    // Treecko deja a Mega Sceptile ex (130) atacando el turno que viene (Rare Candy, [G] y retirar
+    // a Furfrou con su [G]) y noquea. Para upstream, la amenaza de cada lado es el ataque al que
+    // menos energia le falta: con la [G] en el Treecko pasa a ser Pound (20), y los turnos para
+    // ganar suben de 2 a 6.
+
+    #[test]
+    fn t2_attacks_now_instead_of_charging_the_treecko() {
+        for seed in 0..3 {
+            let (end, attacked) = play_turn(&mut t2(), candy_state(CardId::B1206Furfrou), seed);
+            assert!(attacked, "seed {seed}: {:?}", board(&end));
+            assert_eq!(energy_on(&end, "Treecko"), 0, "seed {seed}: {:?}", board(&end));
+        }
+    }
+
+    #[test]
+    fn p2_charges_the_treecko_instead_of_attacking_now() {
+        // p2 une la [G] al Treecko, retira a Furfrou (paga con su [G]) y ataca con Pound: el turno
+        // que viene Rare Candy sobre el activo deja a Mega Sceptile ex atacando sin retirar
+        // (20 + 130 noquea al Chansey). Lo que se chequea es que no carga a Furfrou para Sharp Fang
+        for seed in 0..3 {
+            let (end, _) = play_turn(&mut p2(), candy_state(CardId::B1206Furfrou), seed);
+            assert_eq!(energy_on(&end, "Treecko"), 1, "seed {seed}: {:?}", board(&end));
+            assert!(energy_on(&end, "Furfrou") < 2, "seed {seed}: {:?}", board(&end));
+        }
+    }
+
+    #[test]
+    fn p2_charges_the_benched_treecko_when_the_active_already_attacks() {
+        // Furfrou (B3b 061, Double Headbutt [C]) ya ataca con su [G]: la del turno va al Treecko
+        for seed in 0..3 {
+            let (end, _) = play_turn(&mut p2(), candy_state(CardId::B3b061Furfrou), seed);
+            assert_eq!(energy_on(&end, "Treecko"), 1, "seed {seed}: {:?}", board(&end));
+        }
+    }
+
+    #[test]
+    fn turns_to_win_counts_the_mega_sceptile_of_the_next_turn() {
+        let prep = PrepParams {
+            turns_to_win: 1.0,
+            ..PrepParams::default()
+        };
+        // Con la [G] en el Treecko: Rare Candy y [G] el turno que viene, 130 al Chansey de 120
+        let mut charged = candy_state(CardId::B1206Furfrou);
+        charged.in_play_pokemon[0][1]
+            .as_mut()
+            .unwrap()
+            .attached_energy
+            .push(EnergyType::Grass);
+        assert_eq!(analyze(&charged, 0, 0, &prep, &mut None).turns_to_win, 1.0);
+        // Con la [G] en Furfrou y 50 al Chansey: Furfrou necesita 2 ataques mas y Mega Sceptile ex
+        // (le faltan dos [G]) ataca recien en dos turnos
+        let mut attacked = candy_state(CardId::B1206Furfrou);
+        attacked.in_play_pokemon[0][0]
+            .as_mut()
+            .unwrap()
+            .attached_energy
+            .push(EnergyType::Grass);
+        attacked.in_play_pokemon[1][0].as_mut().unwrap().apply_damage(50);
+        assert_eq!(analyze(&attacked, 0, 0, &prep, &mut None).turns_to_win, 2.0);
+    }
+
+    #[test]
+    fn the_opponent_hand_is_not_used() {
+        // Desde el punto de vista del rival, mi Rare Candy y mi Mega Sceptile ex no se ven: mi
+        // amenaza es la que tengo en juego
+        let prep = PrepParams {
+            turns_to_win: 1.0,
+            deck_evolution: 0.0,
+            ..PrepParams::default()
+        };
+        let mut state = candy_state(CardId::B1206Furfrou);
+        state.in_play_pokemon[0][1]
+            .as_mut()
+            .unwrap()
+            .attached_energy
+            .push(EnergyType::Grass);
+        let mine = analyze(&state, 0, 0, &prep, &mut None);
+        let seen_by_rival = analyze(&state, 0, 1, &prep, &mut None);
+        assert_eq!(mine.turns_to_win, 1.0);
+        // Furfrou con [G]: Sharp Fang el turno que viene, 3 ataques al Chansey
+        assert_eq!(seen_by_rival.turns_to_win, 3.0);
+    }
+
+    /// Furfrou activo con [G] (Double Headbutt [C], ya ataca) y un Treecko en la banca desde el
+    /// turno anterior; en la mano Grovyle y Mega Sceptile ex, sin Rare Candy
+    fn grovyle_state() -> State {
+        prep_state(
+            vec![
+                PlayedCard::from_id(CardId::B3b061Furfrou).with_energy(vec![EnergyType::Grass]),
+                PlayedCard::from_id(CardId::B3005Treecko),
+            ],
+            &[CardId::B3006Grovyle, CardId::B3008MegaSceptileEx],
+            vec![PlayedCard::from_id(CardId::A1202Chansey)],
+        )
+    }
+
+    #[test]
+    fn p2_evolves_into_grovyle_on_the_way_to_mega_sceptile() {
+        // t2 tambien lo hace aca: es para que la preparacion no lo rompa
+        for seed in 0..3 {
+            let (end, _) = play_turn(&mut p2(), grovyle_state(), seed);
+            assert!(has(&end, "Grovyle"), "seed {seed}: {:?}", board(&end));
+            assert_eq!(energy_on(&end, "Grovyle"), 1, "seed {seed}: {:?}", board(&end));
+        }
+    }
+
+    #[test]
+    fn without_coefficients_it_is_the_upstream_value_function() {
+        let state = grovyle_state();
+        let off = PrepParams::default();
+        assert_eq!(
+            prep_value_function(&state, 0, &step_2_2_params(), &off),
+            parametric_value_function(&state, 0, &step_2_2_params())
+        );
+    }
+
+    #[test]
+    fn prep_damage_values_the_next_evolution_step() {
+        // Treecko sin energia con Grovyle y Mega Sceptile ex en la mano: Mega Sceptile ex esta a
+        // dos turnos (Grovyle y despues Mega, [G][G]). Grovyle con [G] esta a uno. Con tope en
+        // el HP del Chansey (120) y la banca a la mitad: 0.5 * 120 * 0.5 antes, 0.5 * 120 despues
+        let prep = PrepParams {
+            prep_damage: 1.0,
+            deck_evolution: 0.0,
+            ..PrepParams::default()
+        };
+        let state = grovyle_state();
+        let treecko = analyze(&state, 0, 0, &prep, &mut None).damage;
+        let mut evolved = state.clone();
+        evolved.in_play_pokemon[0][1] =
+            Some(PlayedCard::from_id(CardId::B3006Grovyle).with_energy(vec![EnergyType::Grass]));
+        evolved.hands[0].retain(|card| card.get_name() != "Grovyle");
+        let grovyle = analyze(&evolved, 0, 0, &prep, &mut None).damage;
+        // Lo del Furfrou activo es igual en los dos estados
+        let furfrou = treecko - 0.5 * 120.0 * 0.5;
+        assert!(
+            (grovyle - furfrou - 0.5 * 120.0).abs() < 1e-6,
+            "{treecko} -> {grovyle}"
+        );
+    }
+
+    #[test]
+    fn a_type_the_zone_does_not_generate_is_never_reached() {
+        // Mega Sceptile ex pide [G][G]: con zona de solo Fire no cuenta
+        let prep = PrepParams {
+            prep_damage: 1.0,
+            deck_evolution: 0.0,
+            ..PrepParams::default()
+        };
+        let mut state = grovyle_state();
+        state.decks[0].energy_types = vec![EnergyType::Fire];
+        let fire = analyze(&state, 0, 0, &prep, &mut None).damage;
+        state.decks[0].energy_types = vec![EnergyType::Grass];
+        let grass = analyze(&state, 0, 0, &prep, &mut None).damage;
+        assert!(grass > fire, "{fire} vs {grass}");
+    }
+}

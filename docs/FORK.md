@@ -33,10 +33,14 @@ lo manejan viven en tcgpocket (`scripts/README-deckgym.md`); aca solo estan los 
    `scripts/deckgym-lib.mjs` de tcgpocket: si se cambia aca, cambiarlo alla. Desde `c972f98` tambien
    cuenta por jugador las habilidades, ataques y entrenadores usados y los turnos en que cada
    habilidad y ataque estaba disponible (`abilities`, `attacks`, `trainers`, `ability_turns`,
-   `attack_turns`; los lee `scripts/deckgym-card-audit.mjs --usage`).
+   `attack_turns`; los lee `scripts/deckgym-card-audit.mjs --usage`). Desde el step 2.9, `attack_first_turn`
+   (primer turno en que se ofrecio cada ataque) y, con `DECKGYM_STATS_TURNS=1`, `turn_ends` (tablero y mano al final
+   de cada turno propio; lo lee `deckgym-card-audit.mjs --turns`).
 3. **Bots propios** (`src/players/own_*.rs`, ver `docs/search-design.md`): `o<n>`, busqueda con la respuesta
    del rival (step 2.3); `t<n>`, puntua cada jugada al final del turno propio, completando el resto del turno
-   con greedy, para no perder las habilidades gratis antes de atacar (step 2.7).
+   con greedy, para no perder las habilidades gratis antes de atacar (step 2.7); `p<n>`, t<n> con la funcion de
+   valor propia de preparacion (`own_value.rs`, `value_params/prep.json` por `DECKGYM_PREP_PARAMS`, step 2.9);
+   `d<n>`, t<n> que re-puntua sus mejores jugadas jugando dos turnos propios (step 2.9, experimental: caro).
 4. **Tests de auditoria de cartas** (`tests/pokemon/meta_audit_*_test.rs`, step 2.5): las 56 cartas de
    los mazos que el benchmark mas desvia; los `#[ignore = "BUG: ..."]` son bugs conocidos (Teary Attack
    y Dragon's Blessing van en el step 2.4). Resultado en `docs/cartas-sospechosas.md` de tcgpocket.

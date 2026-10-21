@@ -80,3 +80,27 @@ Elegido con pruebas cortas (`e2`, 100 partidas por asiento en 4 matchups de Rayq
 matchup 0.288 -> 0.335, MAE 16.9 -> 15.6pp, Rayquaza vs Lucario 43% -> 52% (real 65%); Lucario sigue
 +16pp sobrestimado. `e2` queda bastante mas lento (cada evaluacion precia los ataques con 1 y 2
 energias de mas). No se corrio `deckgym-calibrate-search.mjs` (best.json sin cambios).
+
+## Preparacion (`prep.json`, step 2.9, 2026-10-21)
+
+Funcion de valor propia del jugador `p<n>` (`src/players/own_value.rs`): la de upstream con
+`DECKGYM_VALUE_PARAMS` mas dos terminos con coeficientes en otro JSON, `DECKGYM_PREP_PARAMS`
+(`PrepParams`; los campos que falten quedan en el default, que no suma nada). `e<n>`, `v`, `o<n>` y
+`t<n>` no la usan.
+
+| campo | default | que mide |
+| --- | --- | --- |
+| `prep_damage` | 0 | por punto de dano: por cada Pokemon en juego, el mejor ataque que va a poder hacer con las formas a las que llega (la actual, las evoluciones de la mano a un turno, Rare Candy + fase 2 de la mano a un turno, fase 1 + fase 2 de la mano a dos, las del mazo con peso `deck_evolution`), con el dano del motor contra el activo rival y tope en el HP mas alto del lado rival, por `turn_discount^(turnos - 1)`. Turnos = max(1, energia que falta, pasos de evolucion); un tipo que la zona no genera no llega. La banca pesa `bench`. Mio menos el del rival |
+| `turns_to_win` | 0 | si no es 0, reemplaza a `turns_until_opponent_wins` de upstream (que queda en 0): mismo calculo de KOs al activo y a la banca hasta 3 puntos, pero la amenaza es la que noquea antes al activo contando los turnos que tarda en atacar cada forma (upstream toma la de menos energia faltante aunque pegue poco: con la [G] en un Treecko, Pound pasa a ser la amenaza y los turnos para ganar saltan de 2 a 6) |
+| `turn_discount` | 0.5 | factor por turno de mas en `prep_damage` |
+| `bench` | 0.5 | peso de la banca en `prep_damage` |
+| `deck_evolution` | 0.25 | peso de una evolucion que hay que robar |
+| `max_turns` | 3 | turnos que se miran hacia adelante |
+
+La mano solo se usa del jugador desde cuyo punto de vista se evalua: para el rival, sus evoluciones
+salen de mano y mazo juntos con el peso del mazo, y en `turns_to_win` cuenta solo lo que tiene en juego.
+
+- `prep.json`: `prep_damage: 2` (el mismo peso por punto que `energy_damage` en `step-2-2.json`) y
+  `turns_to_win: 100` (el coeficiente de upstream). Se usa con `step-2-2.json`:
+
+      DECKGYM_VALUE_PARAMS=value_params/step-2-2.json DECKGYM_PREP_PARAMS=value_params/prep.json ./target/release/deckgym simulate a.txt b.txt --players p2,t2
