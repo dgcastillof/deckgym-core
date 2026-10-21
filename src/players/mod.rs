@@ -5,6 +5,7 @@ mod expectiminimax_player;
 mod external_player;
 mod human_player;
 mod mcts_player;
+mod own_reply_player;
 mod random_player;
 mod value_function_player;
 pub mod value_functions;
@@ -17,6 +18,7 @@ pub use expectiminimax_player::{ExpectiMiniMaxPlayer, ValueFunction};
 pub use external_player::ExternalPlayer;
 pub use human_player::HumanPlayer;
 pub use mcts_player::MctsPlayer;
+pub use own_reply_player::OpponentReplyPlayer;
 pub use random_player::RandomPlayer;
 pub use value_function_player::ValueFunctionPlayer;
 pub use value_functions::*;
@@ -68,6 +70,10 @@ pub enum PlayerCode {
         max_depth: usize,
     },
     ER, // Evolution Rusher
+    /// La busqueda de e<max_depth> mas el turno del rival (ver `docs/search-design.md`)
+    O {
+        max_depth: usize,
+    },
     /// An external bot, spoken to over stdin/stdout (see `docs/bot-protocol.md`). The command to
     /// run comes from `--bot-a`/`--bot-b`, not from the code itself — `create_players` panics if
     /// asked to build an `X` player; use `create_players_with_bots`.
@@ -89,7 +95,16 @@ pub fn parse_player_code(s: &str) -> Result<PlayerCode, String> {
         "e" => return Ok(PlayerCode::E { max_depth: 3 }), // Default depth
         "er" => return Ok(PlayerCode::ER),
         "x" => return Ok(PlayerCode::X),
+        "o" => return Ok(PlayerCode::O { max_depth: 2 }),
         _ => {}
+    }
+
+    // 'o' seguido de digitos (o2, o3) es OpponentReply con esa profundidad propia
+    if let Some(rest) = lower.strip_prefix('o') {
+        if let Ok(max_depth) = rest.parse::<usize>() {
+            return Ok(PlayerCode::O { max_depth });
+        }
+        return Err(format!("Invalid player code: {s}. Use 'o<number>' for OpponentReply with depth, e.g., 'o2', 'o3'"));
     }
 
     // 'e' followed by digits (e.g., e2, e4) is ExpectiMiniMax with that depth
@@ -147,6 +162,7 @@ fn get_player(deck: Deck, player: &PlayerCode) -> Box<dyn Player> {
             value_function: Box::new(value_functions::loaded_value_function),
         }),
         PlayerCode::ER => Box::new(EvolutionRusherPlayer { deck }),
+        PlayerCode::O { max_depth } => Box::new(OpponentReplyPlayer::new(deck, *max_depth)),
         PlayerCode::X => panic!(
             "PlayerCode::X (external bot) has no command to run; use create_players_with_bots \
              (the CLI's --bot-a/--bot-b flags) instead of create_players"
@@ -205,6 +221,7 @@ mod tests {
             ("e", PlayerCode::E { max_depth: 3 }),
             ("er", PlayerCode::ER),
             ("x", PlayerCode::X),
+            ("o", PlayerCode::O { max_depth: 2 }),
             ("ET", PlayerCode::ET),
         ];
         for (code, expected) in cases {
@@ -217,6 +234,9 @@ mod tests {
         assert_eq!(parse_player_code("e2"), Ok(PlayerCode::E { max_depth: 2 }));
         assert_eq!(parse_player_code("E5"), Ok(PlayerCode::E { max_depth: 5 }));
         assert!(parse_player_code("ex").is_err());
+        assert_eq!(parse_player_code("o2"), Ok(PlayerCode::O { max_depth: 2 }));
+        assert_eq!(parse_player_code("O3"), Ok(PlayerCode::O { max_depth: 3 }));
+        assert!(parse_player_code("ox").is_err());
         assert!(parse_player_code("z").is_err());
     }
 }

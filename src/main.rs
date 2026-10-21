@@ -28,8 +28,8 @@ enum Commands {
         deck_b_or_folder: String,
 
         /// Players' strategies as a comma-separated list (e.g., "e2,e4" or "r,e5")
-        /// Available codes: aa, et, r, h, w, m, v, e<depth>, er, x (external bot, see --bot-a/-b)
-        /// Example: e2 = ExpectiMiniMax with depth 2
+        /// Available codes: aa, et, r, h, w, m, v, e<depth>, o<depth>, er, x (external bot, see --bot-a/-b)
+        /// Example: e2 = ExpectiMiniMax with depth 2; o2 = e2 plus the opponent reply (docs/search-design.md)
         #[arg(long, value_delimiter = ',', value_parser = parse_player_code)]
         players: Option<Vec<PlayerCode>>,
 
@@ -98,7 +98,7 @@ enum Commands {
         deck_b: String,
 
         /// Players' strategies as a comma-separated list (e.g., "e2,e4" or "r,e5")
-        /// Available codes: aa, et, r, h, w, m, v, e<depth>, er, x (external bot, see --bot-a/-b)
+        /// Available codes: aa, et, r, h, w, m, v, e<depth>, o<depth>, er, x (external bot, see --bot-a/-b)
         #[arg(long, value_delimiter = ',', value_parser = parse_player_code)]
         players: Option<Vec<PlayerCode>>,
 
@@ -146,8 +146,8 @@ enum Commands {
         num: u32,
 
         /// Players' strategies as a comma-separated list (e.g., "e2,e4" or "r,e5")
-        /// Available codes: aa, et, r, h, w, m, v, e<depth>, er
-        /// Example: e2 = ExpectiMiniMax with depth 2
+        /// Available codes: aa, et, r, h, w, m, v, e<depth>, o<depth>, er
+        /// Example: e2 = ExpectiMiniMax with depth 2; o2 = e2 plus the opponent reply (docs/search-design.md)
         #[arg(long, value_delimiter = ',', value_parser = parse_player_code)]
         players: Option<Vec<PlayerCode>>,
 
