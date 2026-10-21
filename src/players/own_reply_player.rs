@@ -17,7 +17,7 @@ use crate::{Deck, State};
 
 use super::{Player, ValueFunction};
 
-type ValueFn<'a> = &'a dyn Fn(&State, usize) -> f64;
+pub(crate) type ValueFn<'a> = &'a dyn Fn(&State, usize) -> f64;
 
 /// Muestras (determinizaciones) por candidata
 pub const OPP_SAMPLES_ENV: &str = "DECKGYM_OPP_SAMPLES";
@@ -116,7 +116,7 @@ impl OpponentReplyPlayer {
 
 /// Indice de la mejor accion para `actor` con una busqueda de profundidad `depth` (1 = greedy de
 /// un ply con las elecciones encadenadas resueltas, como `v`; mas = la busqueda de e<depth>).
-fn decide(
+pub(crate) fn decide(
     rng: &mut StdRng,
     state: &State,
     actions: &[Action],
@@ -137,7 +137,7 @@ fn decide(
 // mis nodos, min en los del rival, corte cuando el turno pasa al otro.
 
 /// El puntaje de e<depth> de cada accion para `myself` (lo que maximiza e<depth>)
-fn expectiminimax_scores(
+pub(crate) fn expectiminimax_scores(
     rng: &mut StdRng,
     state: &State,
     actions: &[Action],
@@ -168,7 +168,11 @@ fn expected_value(
         .sum()
 }
 
-fn forecast_outcomes(rng: &mut StdRng, state: &State, action: &Action) -> Vec<(f64, State)> {
+pub(crate) fn forecast_outcomes(
+    rng: &mut StdRng,
+    state: &State,
+    action: &Action,
+) -> Vec<(f64, State)> {
     let (probabilities, mutations) = forecast_action(state, action).into_branches();
     probabilities
         .into_iter()
@@ -218,7 +222,14 @@ fn greedy_action_index(
     let scores: Vec<f64> = actions
         .iter()
         .map(|action| {
-            greedy_expected_value(rng, state, action, myself, MAX_FOLLOW_UP_CHOICES, value_function)
+            greedy_expected_value(
+                rng,
+                state,
+                action,
+                myself,
+                MAX_FOLLOW_UP_CHOICES,
+                value_function,
+            )
         })
         .collect();
     argmax_last(&scores)
@@ -290,7 +301,7 @@ pub(crate) fn determinize(state: &mut State, myself: usize, rng: &mut StdRng) {
 }
 
 /// Como `max_by` sobre f64: el ultimo maximo en caso de empate (asi elige e<n>)
-fn argmax_last(scores: &[f64]) -> usize {
+pub(crate) fn argmax_last(scores: &[f64]) -> usize {
     scores
         .iter()
         .enumerate()
@@ -299,7 +310,7 @@ fn argmax_last(scores: &[f64]) -> usize {
         .unwrap()
 }
 
-fn env_usize(name: &str, default: usize) -> usize {
+pub(crate) fn env_usize(name: &str, default: usize) -> usize {
     match std::env::var(name) {
         Ok(value) if !value.is_empty() => value
             .parse()

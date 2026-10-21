@@ -123,3 +123,95 @@ Tests (`cargo test --lib own_reply`): en una posicion donde el Charmander rival 
 herido el turno siguiente, o2 lo retira al Bulbasaur sano de la banca y e2 no; sin muestras o2 elige
 igual que e2 en todas las decisiones de una partida (la busqueda copiada es fiel); la determinizacion
 conserva lo visible; con una eleccion pendiente sobre la mano rival revelada no se determiniza.
+
+# Completar el turno propio (jugador `t<n>`)
+
+Step 2.7 del roadmap de simulacion de tcgpocket.
+
+## El problema
+
+La profundidad de `e<n>` cuenta acciones, no turnos, y la busqueda corta cuando el turno pasa al
+rival. Con `e2`, usar Water Shuriken (Greninja, A1 089) y elegir el objetivo ya gastan las dos
+acciones: esa hoja se evalua a mitad de turno, con 20 de dano y sin el ataque que todavia falta.
+"Atacar ya" se evalua con el dano completo del ataque. El bot ataca, el turno termina y la habilidad
+se pierde (efecto horizonte). En el step 2.5, e2 uso Water Shuriken en el 56-67% de los turnos en
+que estaba disponible.
+
+El test `e2_attacks_and_loses_water_shuriken` (`cargo test --lib own_turn`) lo confirma: Bulbasaur
+activo con [G][G] (Vine Whip, 40), Greninja en la banca y un Charmander rival con 60 PS. Shuriken mas
+Vine Whip lo noquea; e2 ataca directo y no noquea, con la funcion de valor baseline y con la del
+step 2.2. Si el shuriken solo ya noquea (un Rattata con 20 PS en la banca), e2 lo ve: el KO entra en
+sus dos acciones (`e2_sees_a_water_shuriken_that_knocks_out_by_itself`). El horizonte tapa a la
+habilidad solo cuando lo que rinde depende del ataque que viene despues.
+
+## Idea
+
+`t<n>` puntua cada accion legal al final de mi turno, no a mitad:
+
+1. Se aplica la candidata (esperanza sobre las ramas de `forecast_action`, como `e<n>`).
+2. Se completa el resto de mi turno: la accion `j` del resto se elige con una busqueda de
+   profundidad `max(1, n - 1 - j)` (para `t2`, greedy de un ply con las elecciones encadenadas
+   resueltas, como `v` y como el resto del turno en las muestras de `o<n>`). Una eleccion del rival
+   dentro de mi turno (promover tras un KO) la hace su greedy.
+3. Se evalua la funcion de valor cuando le toca al rival (o termina la partida): el mismo tipo de
+   estado que evalua `e<n>` despues de un ataque, asi todas las candidatas se comparan en el mismo
+   punto.
+
+Las ramas de azar del resto del turno (monedas) se promedian mientras haya hasta 8 abiertas, contando
+las de la candidata; pasado ese tope, cada accion con azar sigue por una sola rama sorteada con su
+probabilidad. La informacion oculta no se rearma: igual que `e<n>`, los robos salen del mazo real.
+
+En el setup (`turn_count == 0`) y en las decisiones mias durante el turno rival no hay turno propio
+que completar: ahi decide la busqueda de `e<n>`.
+
+Por que asi y no "jugar primero las acciones que no cierran opciones": decidir que acciones son
+gratis pide reglas por carta (una habilidad de dano es gratis, una que descarta energia no), y la
+regla 2 de `docs/FORK.md` dice que los bots no reimplementan reglas. Completar el turno con la misma
+funcion de valor no necesita saber nada de las cartas.
+
+El greedy del resto del turno tiene su propio horizonte (entre "atacar" y "shuriken" a un ply elige
+atacar), pero no importa para la decision de la raiz: cada vez que el bot decide, el shuriken es una
+candidata que se completa con el ataque. Lo que si se pierde son las lineas de dos o mas acciones
+gratis antes del ataque cuando la primera no es la candidata (poco comun).
+
+Costo por decision ~ `acciones legales * ramas * (acciones que quedan en el turno) * acciones legales`:
+unas veces `e2`, sin el turno rival de `o<n>`.
+
+## Parametros
+
+Codigo `t<n>` (`t` solo = `t2`). La funcion de valor es la de `DECKGYM_VALUE_PARAMS`, igual que
+`e<n>`, `o<n>` y `v`. No tiene variables de entorno propias.
+
+## Mediciones (t<n>)
+
+Tests (`cargo test --lib own_turn`): en la posicion del shuriken e2 ataca directo y no noquea, t2 tira
+el shuriken, ataca y noquea (con la funcion de valor baseline y la del 2.2, 3 semillas); si el
+shuriken solo ya noquea, los dos lo usan; t2 juega partidas enteras contra e2 con decisiones legales.
+
+Uso (`scripts/deckgym-card-audit.mjs benchmarks/2026-10-18-e2-e2-574afdb.json --usage --players t2,e2`
+en tcgpocket, 50 partidas contra el #1, baseline): Water Shuriken por turno disponible 0.99, 1.13 y
+1.00 en los tres mazos de Greninja (e2: 0.56, 0.58, 0.67; o2: 0.82, 0.92, 0.86). La disponibilidad de
+Terminating Tail, Mega Burning y Dede-Circuit no sube: eso es armar la linea de fase 2 en varios
+turnos, no este horizonte.
+
+Escalera (`deckgym-ladder.mjs --players e2,o2,t2 --num 200`, 6 mazos espejo, 2400 partidas por par,
+semilla 20261017, `step-2-2.json` en los tres, 12 nucleos):
+
+| Cara a cara | Winrate del primero | IC 95% | ms por partida (los dos jugadores) |
+| --- | --- | --- | --- |
+| t2 vs e2 | 65.2% | 63.3-67.1% | 136 |
+| t2 vs o2 | 58.7% | 56.8-60.7% | 375 |
+| o2 vs e2 | 60.2% | 58.3-62.2% | 354 |
+
+e2 contra e2 anda en ~62 ms por partida, asi que t2 cuesta ~3 veces e2 y menos de la mitad que o2.
+
+Benchmark de tcgpocket (`deckgym-benchmark.mjs --players t2,t2 --top 20 --num 200`, meta del 19/10,
+`step-2-2.json`, las mismas condiciones que las filas de e2 y o2 de arriba): Pearson 0.321, MAE
+15.0 pp, Spearman top 10 -0.33, 83 min. Igual que e2 (0.325; IC 95% bootstrap por pares de la
+diferencia -0.10 a +0.11). Los mazos de Greninja no suben (Sceptile -25.3 pp, Blaziken -19.2,
+Altaria -14.7): en el espejo los dos lados juegan mejor. Rayquaza vs Lucario baja a 36.5% (real
+65.6%). Los matchups de t2 se parecen mas a los de o2 (correlacion 0.92) que a los de e2 (0.79): lo
+que o2 cambiaba respecto de e2 venia sobre todo de completar el turno, no de ver al rival.
+
+Conclusion: t2 es el bot mas fuerte y el mas barato de los nuestros, pero como o2 no acerca la
+simulacion a los humanos. El desvio de los mazos de Greninja no venia del shuriken perdido.
