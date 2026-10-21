@@ -3,7 +3,9 @@
 //! turn 14", "Win without the opponent getting any points"): one compact record per game, written
 //! as JSON by `simulate --stats-json <file>` so a caller can compute the share of games that meet
 //! any threshold. It also counts, per player, the Abilities, attacks and Trainer cards used, so a
-//! caller can check how often a deck's key card is actually played.
+//! caller can check how often a deck's key card is actually played. With `DECKGYM_STATS_TURNS=1`
+//! each player's record also has a snapshot of their board and hand at the end of each own turn
+//! (`turn_ends`), to see what a deck's main attacker was missing before it could attack.
 
 use serde::Serialize;
 use std::any;
@@ -56,6 +58,68 @@ pub struct PlayerGameStats {
     pub ability_turns: BTreeMap<String, u16>,
     /// Own turns in which each attack (same keys as `attacks`) was offered.
     pub attack_turns: BTreeMap<String, u16>,
+    /// Global turn (`turn_count`, both players' turns count) in which each attack (same keys as
+    /// `attacks`) was offered for the first time.
+    pub attack_first_turn: BTreeMap<String, u8>,
+    /// Board and hand at the end of each own turn, only with `DECKGYM_STATS_TURNS=1`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub turn_ends: Vec<TurnSnapshot>,
+}
+
+/// One player's side at the end of one of their turns (read at the opponent's first action, or at
+/// the end of the game): what they had built and what they kept in hand.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct TurnSnapshot {
+    /// Global turn that ended (`turn_count`).
+    pub turn: u8,
+    /// Pokemon in play: slot 0 is the Active Spot.
+    pub in_play: Vec<SnapshotPokemon>,
+    /// Card names in hand.
+    pub hand: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SnapshotPokemon {
+    pub slot: usize,
+    pub name: String,
+    pub energy: Vec<String>,
+    pub tools: Vec<String>,
+}
+
+/// Environment variable that turns on `turn_ends` (off by default: it makes the file ~10x bigger).
+pub const STATS_TURNS_ENV: &str = "DECKGYM_STATS_TURNS";
+
+fn snapshot(state: &State, player: usize, turn: u8) -> TurnSnapshot {
+    TurnSnapshot {
+        turn,
+        in_play: state
+            .enumerate_in_play_pokemon(player)
+            .map(|(slot, pokemon)| SnapshotPokemon {
+                slot,
+                name: pokemon.get_name(),
+                energy: pokemon
+                    .attached_energy
+                    .iter()
+                    .map(|e| format!("{e:?}"))
+                    .collect(),
+                tools: pokemon
+                    .attached_tools
+                    .iter()
+                    .map(|tool| match tool {
+                        Card::Pokemon(p) => p.name.clone(),
+                        Card::Trainer(t) => t.name.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+        hand: state.hands[player]
+            .iter()
+            .map(|card| match card {
+                Card::Pokemon(p) => p.name.clone(),
+                Card::Trainer(t) => t.name.clone(),
+            })
+            .collect(),
+    }
 }
 
 /// What one player did during a game, reset at the start of each game.
@@ -67,6 +131,8 @@ struct PlayerUses {
     trainers: BTreeMap<String, u16>,
     ability_turns: BTreeMap<String, u16>,
     attack_turns: BTreeMap<String, u16>,
+    attack_first_turn: BTreeMap<String, u8>,
+    turn_ends: Vec<TurnSnapshot>,
     /// Keys already counted in `ability_turns` / `attack_turns` this turn, and that turn.
     offered_turn: u8,
     offered: Vec<String>,
@@ -100,15 +166,30 @@ pub struct GameStats {
 }
 
 /// Collects one `GameStats` per game.
-#[derive(Default)]
 pub struct EventStatsCollector {
     uses: [PlayerUses; 2],
     pub games: Vec<GameStats>,
+    /// Whether to record `turn_ends` (`DECKGYM_STATS_TURNS=1`)
+    record_turns: bool,
+    /// (turn_count, current player) of the last action seen, to notice when a turn ends
+    last_turn: Option<(u8, usize)>,
+}
+
+impl Default for EventStatsCollector {
+    fn default() -> Self {
+        Self {
+            uses: Default::default(),
+            games: Vec::new(),
+            record_turns: std::env::var(STATS_TURNS_ENV).is_ok_and(|v| !v.is_empty() && v != "0"),
+            last_turn: None,
+        }
+    }
 }
 
 impl SimulationEventHandler for EventStatsCollector {
     fn on_game_start(&mut self, _game_id: Uuid) {
         self.uses = Default::default();
+        self.last_turn = None;
     }
 
     fn on_action(
@@ -119,6 +200,18 @@ impl SimulationEventHandler for EventStatsCollector {
         playable_actions: &[Action],
         action: &Action,
     ) {
+        let now = (
+            state_before_action.turn_count,
+            state_before_action.current_player,
+        );
+        if let Some((turn, player)) = self.last_turn {
+            // Empezo otro turno: el tablero de quien jugo el anterior es como lo dejo
+            if self.record_turns && turn != now.0 && turn > 0 {
+                let snap = snapshot(state_before_action, player, turn);
+                self.uses[player].turn_ends.push(snap);
+            }
+        }
+        self.last_turn = Some(now);
         let uses = &mut self.uses[actor];
         if actor == state_before_action.current_player {
             if uses.offered_turn != state_before_action.turn_count {
@@ -140,6 +233,11 @@ impl SimulationEventHandler for EventStatsCollector {
                     _ => continue,
                 };
                 if !uses.offered.contains(&key) {
+                    if matches!(playable.action, SimpleAction::Attack(_)) {
+                        uses.attack_first_turn
+                            .entry(key.clone())
+                            .or_insert(state_before_action.turn_count);
+                    }
                     bump(turns, key.clone());
                     uses.offered.push(key);
                 }
@@ -174,6 +272,12 @@ impl SimulationEventHandler for EventStatsCollector {
     }
 
     fn on_game_end(&mut self, _game_id: Uuid, state: State, outcome: Option<GameOutcome>) {
+        if let (true, Some((turn, player))) = (self.record_turns, self.last_turn) {
+            if turn > 0 {
+                let snap = snapshot(&state, player, turn);
+                self.uses[player].turn_ends.push(snap);
+            }
+        }
         let player = |p: usize| PlayerGameStats {
             points: state.points[p],
             active_kos: ALL_TYPES
@@ -190,6 +294,8 @@ impl SimulationEventHandler for EventStatsCollector {
             trainers: self.uses[p].trainers.clone(),
             ability_turns: self.uses[p].ability_turns.clone(),
             attack_turns: self.uses[p].attack_turns.clone(),
+            attack_first_turn: self.uses[p].attack_first_turn.clone(),
+            turn_ends: self.uses[p].turn_ends.clone(),
         };
         self.games.push(GameStats {
             winner: match outcome {
