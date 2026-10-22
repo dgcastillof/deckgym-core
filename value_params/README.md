@@ -96,6 +96,7 @@ Funcion de valor propia del jugador `p<n>` (`src/players/own_value.rs`): la de u
 | `bench` | 0.5 | peso de la banca en `prep_damage` |
 | `deck_evolution` | 0.25 | peso de una evolucion que hay que robar |
 | `max_turns` | 3 | turnos que se miran hacia adelante |
+| `lock` | 0 | por punto de dano (step 3.6): para el activo, la mejor forma con un ataque que duerme o paraliza al activo rival (mecanica `InflictStatusConditions` del motor) y que paga en `max_turns`: 0.5 (dormido) o 1 (paralizado) por min(amenaza rival, PS de la forma), mas 1.5 veces el dano de fin de turno a un activo dormido de los Pokemon en juego (`BadDreamsEndOfTurn`), por `turn_discount^(turnos - 1)`. La amenaza es el mejor ataque del activo rival que paga con una energia mas; sin activo rival (armado), los PS de la forma. Mio menos el del rival |
 
 La mano solo se usa del jugador desde cuyo punto de vista se evalua: para el rival, sus evoluciones
 salen de mano y mazo juntos con el peso del mazo, y en `turns_to_win` cuenta solo lo que tiene en juego.
@@ -104,3 +105,7 @@ salen de mano y mazo juntos con el peso del mazo, y en `turns_to_win` cuenta sol
   `turns_to_win: 100` (el coeficiente de upstream). Se usa con `step-2-2.json`:
 
       DECKGYM_VALUE_PARAMS=value_params/step-2-2.json DECKGYM_PREP_PARAMS=value_params/prep.json ./target/release/deckgym simulate a.txt b.txt --players p2,t2
+- `prep-lock.json` (step 3.6, 2026-10-22): `prep.json` mas `lock: 8`. Sale del cuestionario de posiciones de tcgpocket
+  (quiz/README.md): el usuario pone adelante al que duerme gratis y deja a los Darkrai en la banca; el bot ponia al de mas PS.
+  Con `lock: 8` p2 pone a Igglybuff adelante en el armado de Mega Altaria ex + Espeon en 41 de 81 partidas (antes 20) y nunca a
+  Darkrai (antes 26). Medicion contra Limitless en `benchmarks/` de tcgpocket.

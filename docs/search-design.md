@@ -292,3 +292,23 @@ MAE 12.0 pp, contra 0.454 y 12.3 pp de t2 (diferencia -0.049, IC 95% bootstrap -
 Conclusion: p2 es el bot mas fuerte de los nuestros y corrige el sesgo de `turns_until_opponent_wins`,
 pero no acerca la simulacion a los humanos. Con la energia del step 2.8, lo que queda del desvio no
 viene de no planificar la linea. d2 no rinde lo que cuesta; queda registrado para relevarlo.
+
+# Inmovilizar al rival (termino `lock` de `p<n>`)
+
+Step 3.6 del roadmap de simulacion de tcgpocket: un cuestionario de posiciones (`scripts/deckgym-quiz.mjs` y el modo
+cuestionario del visor) comparo las decisiones del usuario con las de p2 en Mega Altaria ex + Espeon, el mazo que el bot mas
+subestimaba. La diferencia mas fuerte fue a quien poner adelante: el usuario pone al que duerme gratis (Igglybuff con Sleepy
+Lullaby, Eevee que pasa a Espeon con Hypnoblast) y deja a los Darkrai en la banca, donde Bad Dreams pega igual; p2 ponia al de
+mas PS. La funcion de valor no tenia ningun termino para inmovilizar al rival.
+
+`lock` (en `own_value.rs`, coeficiente en `value_params/prep-lock.json`) valua, para el activo de cada lado, la mejor forma
+con un ataque que duerme o paraliza al activo rival y que paga pronto: la parte del proximo ataque rival que se pierde (0.5
+dormido, 1 paralizado) por min(amenaza rival, PS de la forma), mas 1.5 veces el dano de fin de turno a un activo dormido de los
+Pokemon en juego, descontado por turnos como `prep_damage`. Se reconoce por la mecanica del motor (`InflictStatusConditions`,
+`BadDreamsEndOfTurn`), no por nombre de carta. En el armado, cuando el rival todavia no puso activo, la amenaza son los PS de la
+forma. Tests: `cargo test --lib lock_`.
+
+Mediciones (tcgpocket, meta del 19/10, top 20, 200 partidas por par, semilla 20261017): benchmark p2 con `prep-lock.json`
+Pearson 0.428 (0.414 con `prep.json`; IC 95% de la diferencia 0.000 a +0.038), MAE 11.9 pp (12.3), Altaria + Espeon -10.4 ->
+-6.7 pp; 117 de 151 pares identicos. En el armado de Altaria + Espeon con Igglybuff en la mano, p2 lo pone adelante en 41 de 81
+partidas (antes 20) y a Darkrai en ninguna (antes 26).

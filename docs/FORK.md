@@ -39,8 +39,11 @@ lo manejan viven en tcgpocket (`scripts/README-deckgym.md`); aca solo estan los 
 3. **Bots propios** (`src/players/own_*.rs`, ver `docs/search-design.md`): `o<n>`, busqueda con la respuesta
    del rival (step 2.3); `t<n>`, puntua cada jugada al final del turno propio, completando el resto del turno
    con greedy, para no perder las habilidades gratis antes de atacar (step 2.7); `p<n>`, t<n> con la funcion de
-   valor propia de preparacion (`own_value.rs`, `value_params/prep.json` por `DECKGYM_PREP_PARAMS`, step 2.9);
-   `d<n>`, t<n> que re-puntua sus mejores jugadas jugando dos turnos propios (step 2.9, experimental: caro).
+   valor propia de preparacion (`own_value.rs`, `value_params/prep.json` por `DECKGYM_PREP_PARAMS`, step 2.9;
+   desde el step 3.6 `prep-lock.json`, que suma el termino `lock`: dormir o paralizar al rival y el dano pasivo
+   tipo Bad Dreams); `d<n>`, t<n> que re-puntua sus mejores jugadas jugando dos turnos propios (step 2.9,
+   experimental: caro). t<n> y p<n> devuelven el puntaje de cada jugada (`Player::last_scores`), que los replays
+   guardan en `scores` (step 3.6).
 4. **Tests de auditoria de cartas** (`tests/pokemon/meta_audit_*_test.rs`, step 2.5): las 56 cartas de
    los mazos que el benchmark mas desvia; los `#[ignore = "BUG: ..."]` son bugs conocidos (desde el step
    2.4 queda solo Thieving Incisors, simplificacion a proposito). Resultado en `docs/cartas-sospechosas.md`
@@ -51,6 +54,8 @@ lo manejan viven en tcgpocket (`scripts/README-deckgym.md`); aca solo estan los 
      PR bcollazo/deckgym-core#427).
    - Dragon's Blessing de Dragonair solo une al activo [N] (`fix/dragons-blessing`, step 2.4; PR
      bcollazo/deckgym-core#428).
+6. **Modo cuestionario del visor** (`viewer/src/quiz/`, plugin `/quiz/` en `viewer/vite.config.ts`, step 3.6): muestra
+   posiciones de `scripts/deckgym-quiz.mjs` de tcgpocket sin la jugada del bot y guarda las respuestas.
 
 ## Estrategia y reglas del fork
 

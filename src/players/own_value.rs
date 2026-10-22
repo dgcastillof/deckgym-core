@@ -14,6 +14,13 @@
 // - `turns_to_win`: reemplaza a `turns_until_opponent_wins` (mismo calculo de KOs al activo y a la
 //   banca hasta 3 puntos) eligiendo la amenaza que gana mas rapido, contando los turnos que le
 //   faltan a cada forma: energia, evolucion en la mano o Rare Candy.
+// - `lock` (step 3.6): lo que vale que el activo pueda dormir o paralizar al activo rival con un
+//   ataque que paga pronto: el dano que el rival deja de hacer (la mitad si duerme, todo si queda
+//   paralizado) mas el dano pasivo que dispara el sueno (habilidades de dano al final del turno a un
+//   activo dormido, como Bad Dreams). Sin esto el bot pone adelante al Pokemon con mas PS aunque no
+//   haga nada y guarda al que duerme gratis (cuestionario de Mega Altaria ex + Espeon, quiz/README.md
+//   en tcgpocket). Se reconoce por la mecanica del motor (InflictStatusConditions,
+//   BadDreamsEndOfTurn), no por nombre de carta.
 //
 // Las cartas en la mano solo se usan para el jugador desde cuyo punto de vista se evalua: la mano
 // rival es informacion oculta (para el rival cuentan las evoluciones de su mano y su mazo juntos,
@@ -23,10 +30,11 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-use crate::actions::expected_attack_damage;
+use crate::actions::abilities::AbilityMechanic;
+use crate::actions::{expected_attack_damage, get_ability_mechanic, Mechanic, EFFECT_MECHANIC_MAP};
 use crate::card_logic::can_rare_candy_evolve;
 use crate::hooks::energy_missing;
-use crate::models::{Attack, Card, EnergyType, PlayedCard};
+use crate::models::{Attack, Card, EnergyType, PlayedCard, StatusCondition};
 use crate::State;
 
 use super::value_functions::{parametric_value_function, ValueFunctionParams};
@@ -57,6 +65,9 @@ pub struct PrepParams {
     pub deck_evolution: f64,
     /// Turnos propios que se miran hacia adelante como maximo.
     pub max_turns: usize,
+    /// Por punto de dano que el activo evita o provoca dejando al activo rival dormido o paralizado
+    /// (ver [`analyze`]), mio menos el del rival.
+    pub lock: f64,
 }
 
 impl Default for PrepParams {
@@ -68,6 +79,7 @@ impl Default for PrepParams {
             bench: 0.5,
             deck_evolution: 0.25,
             max_turns: 3,
+            lock: 0.0,
         }
     }
 }
@@ -107,7 +119,7 @@ pub fn prep_value_function(
     params: &ValueFunctionParams,
     prep: &PrepParams,
 ) -> f64 {
-    if prep.prep_damage == 0.0 && prep.turns_to_win == 0.0 {
+    if prep.prep_damage == 0.0 && prep.turns_to_win == 0.0 && prep.lock == 0.0 {
         return parametric_value_function(state, myself, params);
     }
     let mut upstream = *params;
@@ -121,6 +133,7 @@ pub fn prep_value_function(
     let theirs = analyze(state, opponent, myself, prep, &mut scratch);
     base + prep.prep_damage * (mine.damage - theirs.damage)
         + prep.turns_to_win * (theirs.turns_to_win - mine.turns_to_win)
+        + prep.lock * (mine.lock - theirs.lock)
 }
 
 /// Lo que `player` puede llegar a hacer contra el otro jugador
@@ -131,6 +144,12 @@ pub(crate) struct Outlook {
     pub damage: f64,
     /// Turnos hasta que `player` gana con su amenaza mas rapida
     pub turns_to_win: f64,
+    /// Mejor `lost * min(amenaza rival, PS de la forma) + pasivo` del activo, descontado como
+    /// `damage`: `lost` es la parte del proximo ataque rival que se pierde por el estado (dormido
+    /// 0.5, paralizado 1), la amenaza es el mejor ataque del activo rival que paga con una energia
+    /// mas (sin activo rival, en el armado, los PS de la forma), y el pasivo es el dano de fin de turno a un activo dormido de los Pokemon en juego de
+    /// `player`, al final de su turno y (si sigue dormido) del siguiente.
+    pub lock: f64,
 }
 
 /// Una forma a la que puede llegar un Pokemon en juego: la carta, en cuantos turnos propios puede
@@ -180,6 +199,16 @@ pub(crate) fn analyze(
         .maybe_get_active(defender)
         .map(|active| active.get_remaining_hp() as f64);
 
+    let (threat, passive) = if prep.lock == 0.0 {
+        (0.0, 0.0)
+    } else {
+        (
+            active_threat(state, defender, &zone_of(state, defender), scratch),
+            asleep_passive_damage(state, player),
+        )
+    };
+    let mut lock: f64 = 0.0;
+
     let mut damage = 0.0;
     // La amenaza que primero noquea al activo rival: (turnos hasta el KO, -dano) mas chico
     let mut best: Option<(f64, Threat)> = None;
@@ -198,6 +227,21 @@ pub(crate) fn analyze(
                     continue;
                 }
                 let hit = price(state, scratch, player, idx, &form.card, &attack, &fill, 0);
+                if idx == 0 && prep.lock != 0.0 {
+                    let (lost, asleep) = status_lock(&attack);
+                    if lost > 0.0 {
+                        // PS de la forma: los que le quedan mas lo que suma la evolucion
+                        let hp = pokemon.get_remaining_hp() as f64
+                            + (card_hp(&form.card) - card_hp(&pokemon.card)).max(0.0);
+                        // Sin activo rival (el armado, cuando elijo primero) se supone que pega
+                        // lo que haga falta para noquearlo
+                        let lost_damage = if target_hp.is_some() { threat.min(hp) } else { hp };
+                        let value = lost * lost_damage + if asleep { 1.5 * passive } else { 0.0 };
+                        lock = lock.max(
+                            form.weight * value * prep.turn_discount.powi(turns as i32 - 1),
+                        );
+                    }
+                }
                 if cap > 0.0 {
                     let value = form.weight
                         * hit.min(cap)
@@ -237,7 +281,85 @@ pub(crate) fn analyze(
     Outlook {
         damage,
         turns_to_win,
+        lock,
     }
+}
+
+/// PS impresos de una carta (0 si no es Pokemon)
+fn card_hp(card: &Card) -> f64 {
+    match card {
+        Card::Pokemon(pokemon) => pokemon.hp as f64,
+        Card::Trainer(_) => 0.0,
+    }
+}
+
+/// Tipos de energia que genera la zona de `player`
+fn zone_of(state: &State, player: usize) -> Vec<EnergyType> {
+    let mut zone: Vec<EnergyType> = state.decks[player].energy_types().to_vec();
+    zone.sort();
+    zone.dedup();
+    zone
+}
+
+/// Parte del proximo ataque rival que se pierde si `attack` deja dormido (0.5: la moneda del
+/// chequeo lo despierta la mitad de las veces) o paralizado (1) al activo rival, y si lo duerme
+fn status_lock(attack: &Attack) -> (f64, bool) {
+    let Some(effect) = attack.effect.as_deref() else {
+        return (0.0, false);
+    };
+    let conditions = match EFFECT_MECHANIC_MAP.get(effect) {
+        Some(Mechanic::InflictStatusConditions {
+            conditions,
+            target_opponent: true,
+        }) => conditions,
+        _ => return (0.0, false),
+    };
+    let asleep = conditions.contains(&StatusCondition::Asleep);
+    let lost = if conditions.contains(&StatusCondition::Paralyzed) {
+        1.0
+    } else if asleep {
+        0.5
+    } else {
+        0.0
+    };
+    (lost, asleep)
+}
+
+/// Dano esperado del mejor ataque del activo de `player` contra el activo rival, entre los que
+/// puede pagar con a lo sumo una energia mas de su zona
+fn active_threat(
+    state: &State,
+    player: usize,
+    zone: &[EnergyType],
+    scratch: &mut Option<State>,
+) -> f64 {
+    let Some(active) = state.maybe_get_active(player) else {
+        return 0.0;
+    };
+    let card = active.card.clone();
+    let mut best: f64 = 0.0;
+    for attack in card.get_attacks() {
+        let missing = energy_missing(active, &attack.energy_required, state, player);
+        let Some(fill) = fill_from_zone(&missing, zone) else {
+            continue;
+        };
+        if fill.len() > 1 {
+            continue;
+        }
+        best = best.max(price(state, scratch, player, 0, &card, &attack, &fill, 0));
+    }
+    best
+}
+
+/// Dano de fin de turno que los Pokemon en juego de `player` le hacen a un activo rival dormido
+fn asleep_passive_damage(state: &State, player: usize) -> f64 {
+    state
+        .enumerate_in_play_pokemon(player)
+        .filter_map(|(_, pokemon)| match get_ability_mechanic(&pokemon.card) {
+            Some(AbilityMechanic::BadDreamsEndOfTurn { amount }) => Some(*amount as f64),
+            _ => None,
+        })
+        .sum()
 }
 
 /// Como `calculate_turns_until_opponent_wins` de upstream, desde el lado del atacante y con la
@@ -454,19 +576,11 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn t2() -> TurnCompletionPlayer {
-        TurnCompletionPlayer {
-            deck: Deck::default(),
-            max_depth: 2,
-            value_function: Box::new(step_2_2),
-        }
+        TurnCompletionPlayer::with_value_function(Deck::default(), 2, Box::new(step_2_2))
     }
 
     pub(crate) fn p2() -> TurnCompletionPlayer {
-        TurnCompletionPlayer {
-            deck: Deck::default(),
-            max_depth: 2,
-            value_function: Box::new(step_2_2_prep),
-        }
+        TurnCompletionPlayer::with_value_function(Deck::default(), 2, Box::new(step_2_2_prep))
     }
 
     pub(crate) fn d2() -> TwoTurnPlayer {
@@ -555,6 +669,58 @@ pub(crate) mod tests {
     // a Furfrou con su [G]) y noquea. Para upstream, la amenaza de cada lado es el ataque al que
     // menos energia le falta: con la [G] en el Treecko pasa a ser Pound (20), y los turnos para
     // ganar suben de 2 a 6.
+
+    // Step 3.6: Igglybuff (Sleepy Lullaby: sin costo, duerme) adelante con dos Darkrai (Bad Dreams,
+    // 20 al final de cada turno a un activo dormido) en la banca, o Darkrai adelante con Igglybuff
+    // y el otro Darkrai en la banca. El rival tiene un Lucario con [F][F] (40).
+    fn sleep_board(iggly_in_front: bool) -> State {
+        let iggly = PlayedCard::from_id(CardId::A4a059Igglybuff);
+        let darkrai = || PlayedCard::from_id(CardId::B2b040Darkrai);
+        let mine = if iggly_in_front {
+            vec![iggly, darkrai(), darkrai()]
+        } else {
+            vec![darkrai(), iggly, darkrai()]
+        };
+        let lucario = PlayedCard::from_id(CardId::A2092Lucario)
+            .with_energy(vec![EnergyType::Fighting, EnergyType::Fighting]);
+        prep_state(mine, &[], vec![lucario])
+    }
+
+    fn with_lock(lock: f64) -> PrepParams {
+        PrepParams {
+            lock,
+            ..prep_params()
+        }
+    }
+
+    #[test]
+    fn lock_counts_the_lost_attack_and_the_bad_dreams_damage() {
+        let prep = with_lock(1.0);
+        let mut scratch = None;
+        // Igglybuff ya puede dormir: la mitad de lo que pierde (min(40, 30 PS)) mas 40 de Bad Dreams
+        // al final de mi turno y la mitad de las veces otros 40 al final del rival
+        let front = analyze(&sleep_board(true), 0, 0, &prep, &mut scratch);
+        assert_eq!(front.lock, 0.5 * 30.0 + 1.5 * 40.0);
+        // Darkrai duerme con Dark Slumber, pero le faltan las tres energias: dos turnos de descuento.
+        // Lucario le pega 60 (40 mas la debilidad), que entran en sus 100 PS
+        let mut scratch = None;
+        let back = analyze(&sleep_board(false), 0, 0, &prep, &mut scratch);
+        assert_eq!(back.lock, (0.5 * 60.0 + 1.5 * 40.0) * 0.25);
+        // Sin el coeficiente no se calcula
+        let mut scratch = None;
+        assert_eq!(analyze(&sleep_board(true), 0, 0, &prep_params(), &mut scratch).lock, 0.0);
+    }
+
+    #[test]
+    fn lock_puts_the_free_sleeper_in_front_of_bad_dreams() {
+        let value = |iggly_in_front, prep: &PrepParams| {
+            prep_value_function(&sleep_board(iggly_in_front), 0, &step_2_2_params(), prep)
+        };
+        // Sin lock gana el de mas PS adelante: lo que el usuario contesto distinto en el cuestionario
+        assert!(value(false, &prep_params()) > value(true, &prep_params()));
+        // Con el coeficiente de value_params/prep-lock.json gana Igglybuff adelante
+        assert!(value(true, &with_lock(8.0)) > value(false, &with_lock(8.0)));
+    }
 
     #[test]
     fn t2_attacks_now_instead_of_charging_the_treecko() {
