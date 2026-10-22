@@ -63,6 +63,15 @@ somewhere other than the default `http://localhost:5173`, or `--replay-dir` isn'
   than one step jumps straight to that snapshot, no animation)
 - The speed dropdown controls `gsap.globalTimeline.timeScale()`, so it affects every animation
 
+## Modo cuestionario (step 3.6 de tcgpocket)
+
+`/?quiz=<base>` abre el cuestionario de posiciones en vez del visor: lee `/quiz/<base>-preguntas.json` (lo escribe
+`scripts/deckgym-quiz.mjs` en tcgpocket), dibuja cada posicion con el tablero de siempre y muestra las jugadas posibles sin la
+del bot. Cada respuesta (indice de la jugada y una nota corta) se guarda al toque con un PUT a `/quiz/<base>.json`; tambien
+queda en el navegador y se puede descargar. El server de vite sirve y escribe esos archivos desde `DECKGYM_QUIZ_DIR` (o
+`quiz/` en la raiz del repo); los archivos de preguntas son de solo lectura. Desde tcgpocket se levanta con
+`node scripts/deckgym-quiz.mjs --viewer` (puerto 5174). Codigo en `src/quiz/`.
+
 ## Card images (optional, off by default)
 
 The repo ships **no card images** — cards render procedurally by default (a name+HP header, stage/

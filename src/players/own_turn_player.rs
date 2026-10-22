@@ -33,15 +33,32 @@ pub struct TurnCompletionPlayer {
     /// con una busqueda de profundidad `max(1, max_depth - 1 - j)`
     pub max_depth: usize,
     pub value_function: ValueFunction,
+    /// Puntaje de cada accion legal en la ultima decision (para los replays: el cuestionario de
+    /// posiciones del step 3.6 saca de aca el margen entre la mejor y la segunda)
+    last_scores: Option<Vec<f64>>,
 }
 
 impl TurnCompletionPlayer {
     /// Con la funcion de valor de `DECKGYM_VALUE_PARAMS`
     pub fn new(deck: Deck, max_depth: usize) -> Self {
+        Self::with_value_function(
+            deck,
+            max_depth,
+            Box::new(super::value_functions::loaded_value_function),
+        )
+    }
+
+    /// Con otra funcion de valor (p<n> usa la de preparacion)
+    pub fn with_value_function(
+        deck: Deck,
+        max_depth: usize,
+        value_function: ValueFunction,
+    ) -> Self {
         Self {
             deck,
             max_depth: max_depth.max(1),
-            value_function: Box::new(super::value_functions::loaded_value_function),
+            value_function,
+            last_scores: None,
         }
     }
 
@@ -149,6 +166,7 @@ impl Player for TurnCompletionPlayer {
         possible_actions: &[Action],
     ) -> Action {
         if possible_actions.len() == 1 {
+            self.last_scores = None;
             return possible_actions[0].clone();
         }
         let myself = possible_actions[0].actor;
@@ -171,11 +189,17 @@ impl Player for TurnCompletionPlayer {
         };
 
         log::set_max_level(original_level);
-        possible_actions[argmax_last(&scores)].clone()
+        let chosen = argmax_last(&scores);
+        self.last_scores = Some(scores);
+        possible_actions[chosen].clone()
     }
 
     fn get_deck(&self) -> Deck {
         self.deck.clone()
+    }
+
+    fn last_scores(&self) -> Option<Vec<f64>> {
+        self.last_scores.clone()
     }
 }
 
@@ -267,11 +291,7 @@ mod tests {
     }
 
     fn t2(vf: fn(&State, usize) -> f64) -> TurnCompletionPlayer {
-        TurnCompletionPlayer {
-            deck: Deck::default(),
-            max_depth: 2,
-            value_function: Box::new(vf),
-        }
+        TurnCompletionPlayer::with_value_function(Deck::default(), 2, Box::new(vf))
     }
 
     #[test]

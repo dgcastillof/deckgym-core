@@ -206,11 +206,11 @@ fn get_player(deck: Deck, player: &PlayerCode) -> Box<dyn Player> {
         PlayerCode::ER => Box::new(EvolutionRusherPlayer { deck }),
         PlayerCode::O { max_depth } => Box::new(OpponentReplyPlayer::new(deck, *max_depth)),
         PlayerCode::T { max_depth } => Box::new(TurnCompletionPlayer::new(deck, *max_depth)),
-        PlayerCode::P { max_depth } => Box::new(TurnCompletionPlayer {
+        PlayerCode::P { max_depth } => Box::new(TurnCompletionPlayer::with_value_function(
             deck,
-            max_depth: (*max_depth).max(1),
-            value_function: Box::new(own_value::loaded_prep_value_function),
-        }),
+            *max_depth,
+            Box::new(own_value::loaded_prep_value_function),
+        )),
         PlayerCode::D { max_depth } => Box::new(TwoTurnPlayer::new(
             deck,
             *max_depth,

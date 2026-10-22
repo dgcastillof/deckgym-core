@@ -47,11 +47,7 @@ impl TwoTurnPlayer {
     /// Con los parametros de las variables de entorno (o los defaults) y la funcion de valor dada
     pub fn new(deck: Deck, max_depth: usize, value_function: ValueFunction) -> Self {
         Self {
-            inner: TurnCompletionPlayer {
-                deck,
-                max_depth: max_depth.max(1),
-                value_function,
-            },
+            inner: TurnCompletionPlayer::with_value_function(deck, max_depth, value_function),
             samples: env_usize(TWO_SAMPLES_ENV, DEFAULT_TWO_SAMPLES),
             top: env_usize(TWO_TOP_ENV, DEFAULT_TWO_TOP),
             next_depth: env_usize(TWO_DEPTH_ENV, DEFAULT_TWO_DEPTH).max(1),

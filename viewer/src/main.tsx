@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { setupGsap } from "./anim/gsap";
 import "./index.css";
 import App from "./App.tsx";
+import QuizApp from "./quiz/QuizApp.tsx";
 
 // Registered once, before any timeline is built. See anim/gsap.ts.
 setupGsap();
@@ -11,4 +12,6 @@ setupGsap();
 // development is designed for code that can safely re-run and clean up; guarding a persistent
 // WebGL context + GSAP timeline cache against that would add real complexity for no production
 // benefit, so it's left off here.
-createRoot(document.getElementById("root")!).render(<App />);
+// `?quiz=<base>` abre el cuestionario de posiciones (quiz/<base>-preguntas.json) en vez del visor
+const quiz = new URLSearchParams(window.location.search).get("quiz");
+createRoot(document.getElementById("root")!).render(quiz ? <QuizApp name={quiz} /> : <App />);
