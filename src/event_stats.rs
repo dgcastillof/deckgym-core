@@ -61,6 +61,14 @@ pub struct PlayerGameStats {
     /// Global turn (`turn_count`, both players' turns count) in which each attack (same keys as
     /// `attacks`) was offered for the first time.
     pub attack_first_turn: BTreeMap<String, u8>,
+    /// Ends of turn (both players') with the opponent's Active Asleep (step 2.12 diagnostics).
+    pub asleep_turn_ends: u16,
+    /// Damage of passive end-of-turn abilities to an Asleep Active (Bad Dreams).
+    pub passive_asleep_damage: u16,
+    /// Damage to the opponent outside of attacks: [Active, Bench].
+    pub non_attack_damage: [u16; 2],
+    /// Opponent's Pokemon Knocked Out by any source: [Active, Bench].
+    pub kos: [u8; 2],
     /// Board and hand at the end of each own turn, only with `DECKGYM_STATS_TURNS=1`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub turn_ends: Vec<TurnSnapshot>,
@@ -296,6 +304,10 @@ impl SimulationEventHandler for EventStatsCollector {
             attack_turns: self.uses[p].attack_turns.clone(),
             attack_first_turn: self.uses[p].attack_first_turn.clone(),
             turn_ends: self.uses[p].turn_ends.clone(),
+            asleep_turn_ends: state.tally.asleep_turn_ends(p),
+            passive_asleep_damage: state.tally.passive_asleep_damage(p),
+            non_attack_damage: state.tally.non_attack_damage(p),
+            kos: state.tally.kos(p),
         };
         self.games.push(GameStats {
             winner: match outcome {

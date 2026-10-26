@@ -731,6 +731,14 @@ pub(crate) fn handle_damage_only(
             continue;
         }
 
+        if !is_from_active_attack && target_player != attacking_player {
+            state.tally.record_non_attack_damage(
+                attacking_player,
+                target_pokemon_idx != 0,
+                damage,
+            );
+        }
+
         // Apply damage
         {
             let target_pokemon = state.in_play_pokemon[target_player][target_pokemon_idx]
@@ -981,6 +989,7 @@ pub(crate) fn handle_knockouts(
                 ko_pokemon.card.get_knockout_points()
             };
             state.points[ko_initiator] += points_won;
+            state.tally.record_ko(ko_initiator, ko_pokemon_idx != 0);
             debug!(
                 "Pokemon {:?} fainted. Player {} won {} points for a total of {}",
                 ko_pokemon, ko_initiator, points_won, state.points[ko_initiator]

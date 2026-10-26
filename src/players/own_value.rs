@@ -21,6 +21,21 @@
 //   haga nada y guarda al que duerme gratis (cuestionario de Mega Altaria ex + Espeon, quiz/README.md
 //   en tcgpocket). Se reconoce por la mecanica del motor (InflictStatusConditions,
 //   BadDreamsEndOfTurn), no por nombre de carta.
+// - `held` (step 2.12): lo que vale que el activo rival YA este dormido o paralizado al terminar mi
+//   turno: el ataque que no va a poder hacer en el suyo (su amenaza) y, si duerme, el dano pasivo
+//   de fin de turno que se come al final de su turno y (si la moneda no lo despierta) del mio. `lock`
+//   valua poder dormirlo; sin `held` el bot no distingue dejarlo dormido de no hacerlo, y no juega
+//   para Bad Dreams (diagnostico del 2.12: con y sin Darkrai el rival termina dormido igual).
+// - `reach` (step 2.12): puntos de los Pokemon rivales que mi amenaza mas rapida noquea de un golpe
+//   (los de la banca pesan `reach_bench`: hay que traerlos o esperar). Valua el dano repartido por lo
+//   que acerca a un KO: tirarle al activo que ya muere con el proximo ataque no suma, dejar a uno de
+//   la banca a tiro (para Cyrus o el siguiente) si. Sin esto el dano suelto en la banca solo cuenta
+//   por los PS (Water Shuriken a la banca no ayudaba a ganar en el 2.12).
+// - Efectos de un turno (step 2.12, cuestionario de Mega Altaria ex + Greninja): los efectos con
+//   duracion sobre las cartas (Teary Attack, Growl: -30 al ataque del turno que viene; escudos)
+//   valen para el primer golpe y no para los siguientes. Sin esto los turnos para ganar del rival
+//   se calculaban como si el -30 durara toda la partida y el bot retiraba a Bonsly para tirarlo en
+//   vez de cargar al atacante. Siempre activo en p<n> (no tiene coeficiente).
 //
 // Las cartas en la mano solo se usan para el jugador desde cuyo punto de vista se evalua: la mano
 // rival es informacion oculta (para el rival cuentan las evoluciones de su mano y su mazo juntos,
@@ -68,6 +83,13 @@ pub struct PrepParams {
     /// Por punto de dano que el activo evita o provoca dejando al activo rival dormido o paralizado
     /// (ver [`analyze`]), mio menos el del rival.
     pub lock: f64,
+    /// Por punto de dano que el activo rival pierde o recibe por estar ya dormido o paralizado al
+    /// evaluar (ver [`Outlook::held`]), mio menos el del rival.
+    pub held: f64,
+    /// Por punto de KO a tiro de un golpe (ver [`Outlook::reach`]), mio menos el del rival.
+    pub reach: f64,
+    /// Peso de un Pokemon de la banca rival en `reach` (el activo pesa 1).
+    pub reach_bench: f64,
 }
 
 impl Default for PrepParams {
@@ -80,6 +102,9 @@ impl Default for PrepParams {
             deck_evolution: 0.25,
             max_turns: 3,
             lock: 0.0,
+            held: 0.0,
+            reach: 0.0,
+            reach_bench: 0.5,
         }
     }
 }
@@ -119,7 +144,12 @@ pub fn prep_value_function(
     params: &ValueFunctionParams,
     prep: &PrepParams,
 ) -> f64 {
-    if prep.prep_damage == 0.0 && prep.turns_to_win == 0.0 && prep.lock == 0.0 {
+    if prep.prep_damage == 0.0
+        && prep.turns_to_win == 0.0
+        && prep.lock == 0.0
+        && prep.held == 0.0
+        && prep.reach == 0.0
+    {
         return parametric_value_function(state, myself, params);
     }
     let mut upstream = *params;
@@ -134,6 +164,8 @@ pub fn prep_value_function(
     base + prep.prep_damage * (mine.damage - theirs.damage)
         + prep.turns_to_win * (theirs.turns_to_win - mine.turns_to_win)
         + prep.lock * (mine.lock - theirs.lock)
+        + prep.held * (mine.held - theirs.held)
+        + prep.reach * (mine.reach - theirs.reach)
 }
 
 /// Lo que `player` puede llegar a hacer contra el otro jugador
@@ -150,6 +182,13 @@ pub(crate) struct Outlook {
     /// mas (sin activo rival, en el armado, los PS de la forma), y el pasivo es el dano de fin de turno a un activo dormido de los Pokemon en juego de
     /// `player`, al final de su turno y (si sigue dormido) del siguiente.
     pub lock: f64,
+    /// Si el activo rival ya esta dormido o paralizado: su amenaza (el ataque que no hace en su
+    /// turno) mas, si duerme, 1.5 veces el dano pasivo a un dormido de `player` (al final de su turno
+    /// seguro y del mio con la moneda del medio).
+    pub held: f64,
+    /// Suma de los puntos de KO de los Pokemon rivales con PS restantes <= el dano de la amenaza mas
+    /// rapida de `player` contra cada uno (la banca pesa `reach_bench`).
+    pub reach: f64,
 }
 
 /// Una forma a la que puede llegar un Pokemon en juego: la carta, en cuantos turnos propios puede
@@ -199,7 +238,7 @@ pub(crate) fn analyze(
         .maybe_get_active(defender)
         .map(|active| active.get_remaining_hp() as f64);
 
-    let (threat, passive) = if prep.lock == 0.0 {
+    let (threat, passive) = if prep.lock == 0.0 && prep.held == 0.0 {
         (0.0, 0.0)
     } else {
         (
@@ -250,7 +289,17 @@ pub(crate) fn analyze(
                 }
                 // En turns_to_win solo cuentan las formas seguras (en juego o en la mano propia)
                 if let (Some(hp), true) = (target_hp, form.weight == 1.0 && hit > 0.0) {
-                    let to_ko = (turns - 1) as f64 + (hp / hit).ceil();
+                    // El primer golpe con los efectos de un turno, los demas sin
+                    let steady = if turns == 1 {
+                        price_steady(state, scratch, player, idx, &form.card, &attack, &fill, 0)
+                    } else {
+                        hit
+                    };
+                    let to_ko = if turns > 1 || hp <= hit || steady <= 0.0 {
+                        (turns - 1) as f64 + (hp / hit).ceil()
+                    } else {
+                        1.0 + ((hp - hit) / steady).ceil()
+                    };
                     let better = best.as_ref().is_none_or(|(t, b)| {
                         to_ko < *t || (to_ko == *t && hit > b.damage)
                     });
@@ -273,6 +322,16 @@ pub(crate) fn analyze(
             prep.bench * best_value
         };
     }
+    let held = match state.maybe_get_active(defender) {
+        Some(active) if prep.held != 0.0 && active.is_asleep() => threat + 1.5 * passive,
+        Some(active) if prep.held != 0.0 && active.is_paralyzed() => threat,
+        _ => 0.0,
+    };
+    let reach = if prep.reach == 0.0 {
+        0.0
+    } else {
+        ko_reach(state, player, best.as_ref().map(|(_, t)| t), prep, scratch)
+    };
     let turns_to_win = if prep.turns_to_win == 0.0 {
         0.0
     } else {
@@ -282,7 +341,48 @@ pub(crate) fn analyze(
         damage,
         turns_to_win,
         lock,
+        held,
+        reach,
     }
+}
+
+/// Puntos de KO de los Pokemon rivales que `threat` (la amenaza mas rapida de `player`, con su
+/// forma y energia) noquea de un golpe: el activo pesa 1 y la banca `reach_bench`. Solo cuenta la
+/// amenaza que ya puede atacar el turno que viene: una que tarda mas no pone a nadie a tiro.
+fn ko_reach(
+    state: &State,
+    player: usize,
+    threat: Option<&Threat>,
+    prep: &PrepParams,
+    scratch: &mut Option<State>,
+) -> f64 {
+    let Some(threat) = threat else {
+        return 0.0;
+    };
+    let ready = threat.fill.is_empty()
+        && state.in_play_pokemon[player][threat.idx]
+            .as_ref()
+            .is_some_and(|p| p.card == threat.form);
+    if !ready {
+        return 0.0;
+    }
+    let defender = (player + 1) % 2;
+    let targets: Vec<(usize, f64, f64)> = state
+        .enumerate_in_play_pokemon(defender)
+        .map(|(idx, p)| (idx, p.get_remaining_hp() as f64, p.card.get_knockout_points() as f64))
+        .collect();
+    let mut total = 0.0;
+    for (idx, hp, points) in targets {
+        let hit = if idx == 0 {
+            threat.damage
+        } else {
+            price(state, scratch, player, threat.idx, &threat.form, &threat.attack, &threat.fill, idx)
+        };
+        if hit > 0.0 && hp <= hit {
+            total += points * if idx == 0 { 1.0 } else { prep.reach_bench };
+        }
+    }
+    total
 }
 
 /// PS impresos de una carta (0 si no es Pokemon)
@@ -394,8 +494,9 @@ fn turns_to_win(
         let Some((bench_idx, target)) = safest else {
             break;
         };
+        // La banca cae en turnos que vienen: sin los efectos de un turno
         let hit = *bench_damage[bench_idx].get_or_insert_with(|| {
-            price(
+            price_steady(
                 state,
                 scratch,
                 player,
@@ -515,6 +616,37 @@ fn price(
     extra: &[EnergyType],
     defender_idx: usize,
 ) -> f64 {
+    price_with(state, scratch, player, idx, form, attack, extra, defender_idx, false)
+}
+
+/// Como [`price`], sin los efectos de un turno del atacante y del defensor: el dano de los golpes
+/// que vienen despues del primero
+#[allow(clippy::too_many_arguments)]
+fn price_steady(
+    state: &State,
+    scratch: &mut Option<State>,
+    player: usize,
+    idx: usize,
+    form: &Card,
+    attack: &Attack,
+    extra: &[EnergyType],
+    defender_idx: usize,
+) -> f64 {
+    price_with(state, scratch, player, idx, form, attack, extra, defender_idx, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn price_with(
+    state: &State,
+    scratch: &mut Option<State>,
+    player: usize,
+    idx: usize,
+    form: &Card,
+    attack: &Attack,
+    extra: &[EnergyType],
+    defender_idx: usize,
+    steady: bool,
+) -> f64 {
     let printed = attack.fixed_damage as f64;
     let defender = (player + 1) % 2;
     let scratch = scratch.get_or_insert_with(|| state.clone());
@@ -524,6 +656,14 @@ fn price(
     let original_card = std::mem::replace(&mut pokemon.card, form.clone());
     let attached = pokemon.attached_energy.len();
     pokemon.attached_energy.extend_from_slice(extra);
+    let mine = if steady { Some(pokemon.take_effects()) } else { None };
+    let theirs = if steady {
+        scratch.in_play_pokemon[defender][defender_idx]
+            .as_mut()
+            .map(|p| p.take_effects())
+    } else {
+        None
+    };
     let current = scratch.current_player;
     scratch.current_player = player;
     scratch.in_play_pokemon[player].swap(0, idx);
@@ -532,9 +672,15 @@ fn price(
     scratch.in_play_pokemon[defender].swap(0, defender_idx);
     scratch.in_play_pokemon[player].swap(0, idx);
     scratch.current_player = current;
+    if let (Some(effects), Some(p)) = (theirs, scratch.in_play_pokemon[defender][defender_idx].as_mut()) {
+        p.restore_effects(effects);
+    }
     if let Some(pokemon) = scratch.in_play_pokemon[player][idx].as_mut() {
         pokemon.card = original_card;
         pokemon.attached_energy.truncate(attached);
+        if let Some(effects) = mine {
+            pokemon.restore_effects(effects);
+        }
     }
     damage
 }
@@ -720,6 +866,77 @@ pub(crate) mod tests {
         assert!(value(false, &prep_params()) > value(true, &prep_params()));
         // Con el coeficiente de value_params/prep-lock.json gana Igglybuff adelante
         assert!(value(true, &with_lock(8.0)) > value(false, &with_lock(8.0)));
+    }
+
+    #[test]
+    fn held_counts_the_lost_attack_and_bad_dreams_only_while_asleep() {
+        let prep = PrepParams {
+            held: 1.0,
+            ..prep_params()
+        };
+        let held = |status: Option<StatusCondition>| {
+            let mut state = sleep_board(true);
+            if let Some(s) = status {
+                state.in_play_pokemon[1][0].as_mut().unwrap().set_status_raw(s);
+            }
+            let mut scratch = None;
+            analyze(&state, 0, 0, &prep, &mut scratch).held
+        };
+        assert_eq!(held(None), 0.0);
+        let paralyzed = held(Some(StatusCondition::Paralyzed));
+        assert!(paralyzed > 0.0);
+        // Dormido: lo mismo mas 1.5 veces los 40 de los dos Darkrai
+        assert_eq!(held(Some(StatusCondition::Asleep)) - paralyzed, 1.5 * 40.0);
+    }
+
+    // Step 2.12: Furfrou con [G][G] (Sharp Fang, 50) contra un Chansey activo y un Lucario en la
+    // banca: el Lucario a tiro (PS <= 50) suma `reach_bench`, el Chansey a tiro suma 1
+    fn reach_board(chansey_hp: u32, lucario_hp: u32) -> State {
+        let furfrou = PlayedCard::from_id(CardId::B1206Furfrou)
+            .with_energy(vec![EnergyType::Grass, EnergyType::Grass]);
+        let chansey = PlayedCard::from_id(CardId::A1202Chansey).with_remaining_hp(chansey_hp);
+        let lucario = PlayedCard::from_id(CardId::A2092Lucario).with_remaining_hp(lucario_hp);
+        prep_state(vec![furfrou], &[], vec![chansey, lucario])
+    }
+
+    #[test]
+    fn reach_counts_the_points_one_hit_away() {
+        let prep = PrepParams {
+            reach: 1.0,
+            ..prep_params()
+        };
+        let reach = |chansey, lucario| {
+            let mut scratch = None;
+            analyze(&reach_board(chansey, lucario), 0, 0, &prep, &mut scratch).reach
+        };
+        assert_eq!(reach(120, 60), 0.0);
+        assert_eq!(reach(120, 40), prep.reach_bench);
+        assert_eq!(reach(50, 40), 1.0 + prep.reach_bench);
+        // Pegarle 20 al activo que ya muere no suma; dejar al de la banca a tiro si
+        assert_eq!(reach(30, 60), reach(50, 60));
+        assert!(reach(50, 40) > reach(30, 60));
+    }
+
+    #[test]
+    fn a_one_turn_attack_reduction_only_slows_the_first_hit() {
+        let prep = PrepParams {
+            turns_to_win: 1.0,
+            ..prep_params()
+        };
+        let turns = |teary: bool| {
+            let mut state = reach_board(120, 60);
+            if teary {
+                state.in_play_pokemon[0][0]
+                    .as_mut()
+                    .unwrap()
+                    .add_effect(crate::effects::CardEffect::ReducedAttackDamage { amount: 30 }, 1);
+            }
+            let mut scratch = None;
+            analyze(&state, 0, 0, &prep, &mut scratch).turns_to_win
+        };
+        // Sharp Fang (50) noquea al Chansey de 120 en 3; con -30 el primer golpe es 20 y despues
+        // 50: 1 + ceil(100 / 50) = 3, no ceil(120 / 20) = 6
+        assert!(turns(true) <= turns(false) + 1.0, "{} vs {}", turns(true), turns(false));
     }
 
     #[test]

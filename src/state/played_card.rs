@@ -575,6 +575,16 @@ impl PlayedCard {
         self.effects.iter().any(|(stored, _)| stored == effect)
     }
 
+    /// Saca los efectos con duracion (para que la funcion de valor calcule el dano "limpio", sin
+    /// lo que dura un turno); `restore_effects` los vuelve a poner
+    pub(crate) fn take_effects(&mut self) -> Vec<(CardEffect, u8)> {
+        std::mem::take(&mut self.effects)
+    }
+
+    pub(crate) fn restore_effects(&mut self, effects: Vec<(CardEffect, u8)>) {
+        self.effects = effects;
+    }
+
     pub(crate) fn get_active_effects(&self) -> Vec<CardEffect> {
         self.effects
             .iter()

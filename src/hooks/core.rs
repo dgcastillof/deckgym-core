@@ -523,6 +523,14 @@ pub(crate) fn on_end_turn(player_ending_turn: usize, state: &mut State) {
     // holder's owner ends the turn, the berry resolves first and Bad Dreams finds nothing.
     let other_player = (player_ending_turn + 1) % 2;
     for player in [player_ending_turn, other_player] {
+        // Solo para reportes (event_stats): el activo rival dormido al final del turno
+        let rival = (player + 1) % 2;
+        if state.in_play_pokemon[rival][0]
+            .as_ref()
+            .is_some_and(|p| p.is_asleep())
+        {
+            state.tally.record_asleep_turn_end(player);
+        }
         apply_berry_tools(player, state);
         apply_bad_dreams_damage(player, state);
     }
@@ -655,6 +663,9 @@ fn apply_bad_dreams_damage(darkrai_owner: usize, state: &mut State) {
             "Bad Dreams: Player {}'s Darkrai deals {} damage to opponent's Asleep active",
             darkrai_owner, amount
         );
+        state
+            .tally
+            .record_passive_asleep_damage(darkrai_owner, amount);
         // Deferred knockout check — see the comment on `apply_deceptive_needle_damage` below.
         crate::actions::handle_damage_only(
             state,
