@@ -109,3 +109,12 @@ salen de mano y mazo juntos con el peso del mazo, y en `turns_to_win` cuenta sol
   (quiz/README.md): el usuario pone adelante al que duerme gratis y deja a los Darkrai en la banca; el bot ponia al de mas PS.
   Con `lock: 8` p2 pone a Igglybuff adelante en el armado de Mega Altaria ex + Espeon en 41 de 81 partidas (antes 20) y nunca a
   Darkrai (antes 26). Medicion contra Limitless en `benchmarks/` de tcgpocket.
+- `prep-8-2.json` (step 8.2, vuelta 1, 2026-10-27; titular desde ese dia): `prep-2-12-bench.json` mas `choices: true`. Los
+  ataques que eligen su dano en el efecto (Chase Order de Vespiquen ex: 70, o 140 descartando un basico [G] de la banca;
+  "este ataque hace X a 1 de los Pokemon rivales"; Wild Swing) no ponen el dano en el resultado sino que encolan la eleccion,
+  y `expected_attack_damage` daba 0: p2 no veia a Vespiquen ex como amenaza y no la evolucionaba ni la cargaba. Con `choices`
+  el precio corre el efecto sobre una copia y toma la mejor de las opciones de dano al activo que encola el motor
+  (`AttackOutcomes::expected_damage_to_opponent_active_with_choices`); no cambia nada con el campo en `false`. La lista de
+  ataques que cambian sale de `cargo test choices_audit -- --ignored --nocapture` (~55; en el top 20 del 19/10: Chase
+  Order, Diving Icicles de Chien-Pao ex, Shadow Bullet de Hoopa ex, Jump Blues de Pheromosa). Medicion en tcgpocket,
+  docs/mejoras.md (registro de vueltas): MAE ponderado 11,95 -> 10,53 y 10,40 pp con dos semillas, Pearson 0,41 -> 0,50 y 0,52.

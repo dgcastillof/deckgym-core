@@ -46,7 +46,10 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use crate::actions::abilities::AbilityMechanic;
-use crate::actions::{expected_attack_damage, get_ability_mechanic, Mechanic, EFFECT_MECHANIC_MAP};
+use crate::actions::{
+    expected_attack_damage, expected_attack_damage_with_choices, get_ability_mechanic, Mechanic,
+    EFFECT_MECHANIC_MAP,
+};
 use crate::card_logic::can_rare_candy_evolve;
 use crate::hooks::energy_missing;
 use crate::models::{Attack, Card, EnergyType, PlayedCard, StatusCondition};
@@ -90,6 +93,10 @@ pub struct PrepParams {
     pub reach: f64,
     /// Peso de un Pokemon de la banca rival en `reach` (el activo pesa 1).
     pub reach_bench: f64,
+    /// Step 8.2: el dano de un ataque que lo elige en su efecto (Chase Order de Vespiquen ex:
+    /// descartar un basico de la banca por 70 mas) es la mejor de las opciones que encola el motor.
+    /// Sin esto vale 0 apenas hay una opcion y el bot no ve al atacante como amenaza.
+    pub choices: bool,
 }
 
 impl Default for PrepParams {
@@ -105,6 +112,7 @@ impl Default for PrepParams {
             held: 0.0,
             reach: 0.0,
             reach_bench: 0.5,
+            choices: false,
         }
     }
 }
@@ -242,7 +250,7 @@ pub(crate) fn analyze(
         (0.0, 0.0)
     } else {
         (
-            active_threat(state, defender, &zone_of(state, defender), scratch),
+            active_threat(state, defender, &zone_of(state, defender), scratch, prep.choices),
             asleep_passive_damage(state, player),
         )
     };
@@ -265,7 +273,17 @@ pub(crate) fn analyze(
                 if turns > prep.max_turns {
                     continue;
                 }
-                let hit = price(state, scratch, player, idx, &form.card, &attack, &fill, 0);
+                let hit = price(
+                    state,
+                    scratch,
+                    prep.choices,
+                    player,
+                    idx,
+                    &form.card,
+                    &attack,
+                    &fill,
+                    0,
+                );
                 if idx == 0 && prep.lock != 0.0 {
                     let (lost, asleep) = status_lock(&attack);
                     if lost > 0.0 {
@@ -291,7 +309,17 @@ pub(crate) fn analyze(
                 if let (Some(hp), true) = (target_hp, form.weight == 1.0 && hit > 0.0) {
                     // El primer golpe con los efectos de un turno, los demas sin
                     let steady = if turns == 1 {
-                        price_steady(state, scratch, player, idx, &form.card, &attack, &fill, 0)
+                        price_steady(
+                            state,
+                            scratch,
+                            prep.choices,
+                            player,
+                            idx,
+                            &form.card,
+                            &attack,
+                            &fill,
+                            0,
+                        )
                     } else {
                         hit
                     };
@@ -335,7 +363,7 @@ pub(crate) fn analyze(
     let turns_to_win = if prep.turns_to_win == 0.0 {
         0.0
     } else {
-        turns_to_win(state, player, best, scratch)
+        turns_to_win(state, player, best, scratch, prep.choices)
     };
     Outlook {
         damage,
@@ -376,7 +404,17 @@ fn ko_reach(
         let hit = if idx == 0 {
             threat.damage
         } else {
-            price(state, scratch, player, threat.idx, &threat.form, &threat.attack, &threat.fill, idx)
+            price(
+                state,
+                scratch,
+                prep.choices,
+                player,
+                threat.idx,
+                &threat.form,
+                &threat.attack,
+                &threat.fill,
+                idx,
+            )
         };
         if hit > 0.0 && hp <= hit {
             total += points * if idx == 0 { 1.0 } else { prep.reach_bench };
@@ -432,6 +470,7 @@ fn active_threat(
     player: usize,
     zone: &[EnergyType],
     scratch: &mut Option<State>,
+    choices: bool,
 ) -> f64 {
     let Some(active) = state.maybe_get_active(player) else {
         return 0.0;
@@ -446,7 +485,7 @@ fn active_threat(
         if fill.len() > 1 {
             continue;
         }
-        best = best.max(price(state, scratch, player, 0, &card, &attack, &fill, 0));
+        best = best.max(price(state, scratch, choices, player, 0, &card, &attack, &fill, 0));
     }
     best
 }
@@ -471,6 +510,7 @@ fn turns_to_win(
     player: usize,
     best: Option<(f64, Threat)>,
     scratch: &mut Option<State>,
+    choices: bool,
 ) -> f64 {
     let defender = (player + 1) % 2;
     let Some((to_ko, threat)) = best else {
@@ -499,6 +539,7 @@ fn turns_to_win(
             price_steady(
                 state,
                 scratch,
+                choices,
                 player,
                 threat.idx,
                 &threat.form,
@@ -609,6 +650,7 @@ fn fill_from_zone(missing: &[EnergyType], zone: &[EnergyType]) -> Option<Vec<Ene
 fn price(
     state: &State,
     scratch: &mut Option<State>,
+    choices: bool,
     player: usize,
     idx: usize,
     form: &Card,
@@ -616,7 +658,7 @@ fn price(
     extra: &[EnergyType],
     defender_idx: usize,
 ) -> f64 {
-    price_with(state, scratch, player, idx, form, attack, extra, defender_idx, false)
+    price_with(state, scratch, choices, player, idx, form, attack, extra, defender_idx, false)
 }
 
 /// Como [`price`], sin los efectos de un turno del atacante y del defensor: el dano de los golpes
@@ -625,6 +667,7 @@ fn price(
 fn price_steady(
     state: &State,
     scratch: &mut Option<State>,
+    choices: bool,
     player: usize,
     idx: usize,
     form: &Card,
@@ -632,13 +675,14 @@ fn price_steady(
     extra: &[EnergyType],
     defender_idx: usize,
 ) -> f64 {
-    price_with(state, scratch, player, idx, form, attack, extra, defender_idx, true)
+    price_with(state, scratch, choices, player, idx, form, attack, extra, defender_idx, true)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn price_with(
     state: &State,
     scratch: &mut Option<State>,
+    choices: bool,
     player: usize,
     idx: usize,
     form: &Card,
@@ -668,7 +712,12 @@ fn price_with(
     scratch.current_player = player;
     scratch.in_play_pokemon[player].swap(0, idx);
     scratch.in_play_pokemon[defender].swap(0, defender_idx);
-    let damage = expected_attack_damage(scratch, attack).unwrap_or(printed);
+    let damage = if choices {
+        expected_attack_damage_with_choices(scratch, attack)
+    } else {
+        expected_attack_damage(scratch, attack)
+    }
+    .unwrap_or(printed);
     scratch.in_play_pokemon[defender].swap(0, defender_idx);
     scratch.in_play_pokemon[player].swap(0, idx);
     scratch.current_player = current;
@@ -1076,6 +1125,37 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn choices_price_chase_order_with_the_discard() {
+        // Step 8.2: Vespiquen ex con [G][G] contra un Chansey. Con un Combee en la banca el motor
+        // encola la eleccion (70, o 140 descartando al Combee) y el dano del resultado es 0
+        let board = |bench: bool| {
+            let mut mine = vec![PlayedCard::from_id(CardId::B4011VespiquenEx)
+                .with_energy(vec![EnergyType::Grass, EnergyType::Grass])];
+            if bench {
+                mine.push(PlayedCard::from_id(CardId::B4010Combee));
+            }
+            prep_state(mine, &[], vec![PlayedCard::from_id(CardId::A1202Chansey)])
+        };
+        let hit = |bench: bool, choices: bool| {
+            let state = board(bench);
+            let vespiquen = state.in_play_pokemon[0][0].as_ref().unwrap().card.clone();
+            let attack = vespiquen.get_attacks()[0].clone();
+            price(&state, &mut None, choices, 0, 0, &vespiquen, &attack, &[], 0)
+        };
+        assert_eq!(hit(true, false), 0.0);
+        assert_eq!(hit(true, true), 140.0);
+        assert_eq!(hit(false, false), 70.0);
+        assert_eq!(hit(false, true), 70.0);
+        // Y pasa a ser la amenaza: Chansey (120) cae de un golpe
+        let prep = PrepParams {
+            turns_to_win: 1.0,
+            choices: true,
+            ..PrepParams::default()
+        };
+        assert_eq!(analyze(&board(true), 0, 0, &prep, &mut None).turns_to_win, 1.0);
+    }
+
+    #[test]
     fn a_type_the_zone_does_not_generate_is_never_reached() {
         // Mega Sceptile ex pide [G][G]: con zona de solo Fire no cuenta
         let prep = PrepParams {
@@ -1089,5 +1169,55 @@ pub(crate) mod tests {
         state.decks[0].energy_types = vec![EnergyType::Grass];
         let grass = analyze(&state, 0, 0, &prep, &mut None).damage;
         assert!(grass > fire, "{fire} vs {grass}");
+    }
+}
+
+#[cfg(test)]
+/// Step 8.2 (palanca 3): los ataques que `choices` valua distinto, con el atacante cargado, un
+/// Combee en la banca y dos Chansey rivales. `cargo test choices_audit -- --ignored --nocapture`
+mod choices_audit {
+    use super::tests::prep_state;
+    use super::*;
+    use crate::card_ids::CardId;
+    use crate::database::get_card_by_enum;
+    use strum::IntoEnumIterator;
+
+    #[test]
+    #[ignore]
+    fn list_attacks_priced_differently_with_choices() {
+        let mut seen = std::collections::HashSet::new();
+        for id in CardId::iter() {
+            let card = get_card_by_enum(id);
+            let Card::Pokemon(p) = &card else { continue };
+            for attack in card.get_attacks() {
+                if !seen.insert((p.name.clone(), attack.title.clone())) {
+                    continue;
+                }
+                let energy: Vec<EnergyType> = attack
+                    .energy_required
+                    .iter()
+                    .map(|e| if *e == EnergyType::Colorless { p.energy_type } else { *e })
+                    .collect();
+                let bench = PlayedCard::from_id(CardId::B4010Combee);
+                let state = prep_state(
+                    vec![
+                        PlayedCard::from_id(id).with_energy(energy),
+                        bench,
+                        PlayedCard::from_id(CardId::A1202Chansey),
+                    ],
+                    &[],
+                    vec![
+                        PlayedCard::from_id(CardId::A1202Chansey),
+                        PlayedCard::from_id(CardId::A1202Chansey).with_remaining_hp(60),
+                    ],
+                );
+                let off = price(&state, &mut None, false, 0, 0, &card, &attack, &[], 0);
+                let on = price(&state, &mut None, true, 0, 0, &card, &attack, &[], 0);
+                if (off - on).abs() > 1e-9 {
+                    let printed = attack.fixed_damage;
+                    println!("CHOICES|{}|{}|{printed}|{off}|{on}", p.name, attack.title);
+                }
+            }
+        }
     }
 }

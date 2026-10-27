@@ -113,6 +113,26 @@ pub fn expected_attack_damage(state: &State, attack: &Attack) -> Option<f64> {
     ))
 }
 
+/// Like [`expected_attack_damage`], resolving the damage choices that an attack's effect queues
+/// (see `AttackOutcomes::expected_damage_to_opponent_active_with_choices`): for the `p<n>` value
+/// function with `choices` on (step 8.2).
+pub fn expected_attack_damage_with_choices(state: &State, attack: &Attack) -> Option<f64> {
+    let acting_player = state.current_player;
+    state.in_play_pokemon[acting_player][0].as_ref()?;
+    state.in_play_pokemon[(acting_player + 1) % 2][0].as_ref()?;
+    if let Some(effect) = &attack.effect {
+        EFFECT_MECHANIC_MAP.get(&effect[..])?;
+    }
+    let outcomes = forecast_attack_outcomes(acting_player, state, attack, false);
+    Some(outcomes.expected_damage_to_opponent_active_with_choices(
+        state,
+        acting_player,
+        &SimpleAction::Attack(attack.clone()),
+        Some(&attack.title),
+        attack.effect.as_deref(),
+    ))
+}
+
 fn apply_attack_common_modifiers(
     acting_player: usize,
     state: &State,

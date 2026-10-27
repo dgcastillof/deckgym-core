@@ -631,6 +631,97 @@ impl AttackOutcomes {
         )
     }
 
+    /// Like [`Self::expected_damage_to_opponent_active`], but for a branch that deals no damage
+    /// to the opponent's Active Pokémon by itself and has an effect, runs the effect on a copy of
+    /// the state and reads the damage choices it queued (Vespiquen ex's Chase Order, Gyarados's
+    /// Wild Swing: the damage is a choice pushed to the stack, not part of the outcome). The
+    /// branch is then worth the best of those choices against the Active Pokémon, with modifiers.
+    /// Used by the `p<n>` value function (step 8.2); `attack` is the action the effect sees.
+    pub fn expected_damage_to_opponent_active_with_choices(
+        &self,
+        state: &State,
+        acting_player: usize,
+        attack: &SimpleAction,
+        attack_name: Option<&str>,
+        attack_effect: Option<&str>,
+    ) -> f64 {
+        let opponent = (acting_player + 1) % 2;
+        let context = DamageModifierContext {
+            attack_name,
+            attack_effect,
+        };
+        self.branches
+            .iter()
+            .map(|branch| {
+                let outcome = &branch.outcome;
+                let direct: u32 = outcome
+                    .damage
+                    .iter()
+                    .filter(|(_, is_opponent, idx)| *is_opponent && *idx == 0)
+                    .map(|(amount, _, _)| {
+                        modify_damage(
+                            state,
+                            (acting_player, 0),
+                            (*amount, opponent, 0),
+                            true,
+                            context,
+                        )
+                    })
+                    .sum();
+                if direct > 0
+                    || (outcome.pre_damage_effect.is_none() && outcome.post_damage_effect.is_none())
+                {
+                    return branch.probability * direct as f64;
+                }
+                let mut copy = state.clone();
+                let queued = copy.move_generation_stack.len();
+                let action = Action {
+                    actor: acting_player,
+                    action: attack.clone(),
+                    is_stack: false,
+                };
+                let mut rng = <StdRng as rand::SeedableRng>::seed_from_u64(0);
+                for effect in [&outcome.pre_damage_effect, &outcome.post_damage_effect]
+                    .into_iter()
+                    .flatten()
+                {
+                    effect(&mut rng, &mut copy, &action);
+                }
+                let mut best: u32 = 0;
+                for (actor, choices) in copy.move_generation_stack.iter().skip(queued) {
+                    if *actor != acting_player {
+                        continue;
+                    }
+                    for choice in choices {
+                        let raw = match choice {
+                            SimpleAction::ApplyDamage { targets, .. } => targets
+                                .iter()
+                                .filter(|(_, player, idx)| *player == opponent && *idx == 0)
+                                .map(|(amount, _, _)| *amount)
+                                .sum(),
+                            SimpleAction::DiscardOwnBenchedThenDamage { damage, .. }
+                            | SimpleAction::DiscardOwnBenchedGroupThenDamage { damage, .. } => {
+                                *damage
+                            }
+                            _ => 0,
+                        };
+                        if raw > 0 {
+                            let hit = modify_damage(
+                                &copy,
+                                (acting_player, 0),
+                                (raw, opponent, 0),
+                                true,
+                                context,
+                            );
+                            best = best.max(hit);
+                        }
+                    }
+                }
+                branch.probability * best as f64
+            })
+            .sum()
+    }
+
     /// Lower into `Outcomes` and return its `(probabilities, mutations)` branches. Convenience
     /// used by tests that want to apply a specific branch's mutation directly.
     #[cfg(test)]
