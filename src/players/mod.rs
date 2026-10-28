@@ -188,6 +188,29 @@ pub fn create_players(
     vec![player_a, player_b]
 }
 
+/// El bot sombra del asiento humano: con `DECKGYM_SHADOW_PREP_PARAMS` (y opcionalmente
+/// `DECKGYM_SHADOW_VALUE_PARAMS`), un p<n> puntua con esos coeficientes en lugar de los de
+/// `DECKGYM_PREP_PARAMS` y `DECKGYM_VALUE_PARAMS` (los del rival)
+fn shadow_player(deck: Deck, code: &PlayerCode) -> Box<dyn Player> {
+    let env = |name: &str| std::env::var(name).ok().filter(|s| !s.is_empty());
+    match (code, env("DECKGYM_SHADOW_PREP_PARAMS")) {
+        (PlayerCode::P { max_depth }, Some(path)) => {
+            let params = own_value::PrepParams::from_json_file(&path)
+                .unwrap_or_else(|e| panic!("Invalid DECKGYM_SHADOW_PREP_PARAMS: {e}"));
+            let upstream = env("DECKGYM_SHADOW_VALUE_PARAMS").map(|path| {
+                ValueFunctionParams::from_json_file(&path)
+                    .unwrap_or_else(|e| panic!("Invalid DECKGYM_SHADOW_VALUE_PARAMS: {e}"))
+            });
+            Box::new(TurnCompletionPlayer::with_value_function(
+                deck,
+                *max_depth,
+                Box::new(own_value::prep_value_function_from(params, upstream)),
+            ))
+        }
+        _ => get_player(deck, code),
+    }
+}
+
 fn get_player(deck: Deck, player: &PlayerCode) -> Box<dyn Player> {
     match player {
         PlayerCode::AA => Box::new(AttachAttackPlayer { deck }),
@@ -248,7 +271,17 @@ pub fn create_players_with_bots(
                         if i == 0 { "a" } else { "b" }
                     )
                 });
-                Box::new(ExternalPlayer::new(deck, command, bot_timeout))
+                let player = ExternalPlayer::new(deck.clone(), command, bot_timeout);
+                // DECKGYM_EXTERNAL_SHADOW=p2: ese bot puntua cada decision del externo (ver
+                // ExternalPlayer::with_shadow)
+                match std::env::var("DECKGYM_EXTERNAL_SHADOW").ok().filter(|s| !s.is_empty()) {
+                    Some(code) => {
+                        let code = parse_player_code(&code)
+                            .unwrap_or_else(|e| panic!("DECKGYM_EXTERNAL_SHADOW: {e}"));
+                        Box::new(player.with_shadow(shadow_player(deck, &code)))
+                    }
+                    None => Box::new(player),
+                }
             }
             other => get_player(deck, &other),
         };

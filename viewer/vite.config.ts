@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig, type Connect, type Plugin } from 'vite'
+import { playPlugin } from './play-server.ts'
 
 // Serves the repo-root `replays/` folder (one level up from `viewer/`) at `/replays/<file>.json` —
 // what `cargo run -- play`'s printed link (`?url=/replays/<game_id>.json`) needs to actually
@@ -163,5 +164,5 @@ function quizPlugin(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), replaysStaticPlugin(), quizPlugin()],
+  plugins: [react(), replaysStaticPlugin(), quizPlugin(), playPlugin()],
 })

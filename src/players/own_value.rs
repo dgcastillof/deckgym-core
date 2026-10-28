@@ -36,6 +36,12 @@
 //   valen para el primer golpe y no para los siguientes. Sin esto los turnos para ganar del rival
 //   se calculaban como si el -30 durara toda la partida y el bot retiraba a Bonsly para tirarlo en
 //   vez de cargar al atacante. Siempre activo en p<n> (no tiene coeficiente).
+// - `generator` (step 3.7, partidas de Magnezone + Miraidon ex contra el bot): por cada Pokemon en
+//   juego con una habilidad que se carga energia sola cada turno (Volt Charge, Dragon's Blessing
+//   desde la banca), mio menos el del rival. Ningun termino veia la energia de los turnos que
+//   vienen: el bot evolucionaba Magneton a Magnezone apenas podia (pierde Volt Charge) y el usuario
+//   solo evoluciona al activo si lo salva o le sirve el ataque ya. Se reconoce por la mecanica del
+//   motor (AbilityMechanic), no por nombre de carta.
 //
 // Las cartas en la mano solo se usan para el jugador desde cuyo punto de vista se evalua: la mano
 // rival es informacion oculta (para el rival cuentan las evoluciones de su mano y su mazo juntos,
@@ -97,6 +103,9 @@ pub struct PrepParams {
     /// descartar un basico de la banca por 70 mas) es la mejor de las opciones que encola el motor.
     /// Sin esto vale 0 apenas hay una opcion y el bot no ve al atacante como amenaza.
     pub choices: bool,
+    /// Step 3.7: por cada Pokemon en juego que genera energia cada turno con su habilidad (ver
+    /// [`energy_generators`]), mio menos el del rival.
+    pub generator: f64,
 }
 
 impl Default for PrepParams {
@@ -113,6 +122,7 @@ impl Default for PrepParams {
             reach: 0.0,
             reach_bench: 0.5,
             choices: false,
+            generator: 0.0,
         }
     }
 }
@@ -157,6 +167,7 @@ pub fn prep_value_function(
         && prep.lock == 0.0
         && prep.held == 0.0
         && prep.reach == 0.0
+        && prep.generator == 0.0
     {
         return parametric_value_function(state, myself, params);
     }
@@ -174,6 +185,73 @@ pub fn prep_value_function(
         + prep.lock * (mine.lock - theirs.lock)
         + prep.held * (mine.held - theirs.held)
         + prep.reach * (mine.reach - theirs.reach)
+        + prep.generator * (energy_generators(state, myself) - energy_generators(state, opponent))
+}
+
+/// Cada termino de [`prep_value_function`] ya multiplicado por su coeficiente (suman el puntaje):
+/// los de upstream con su nombre y los de preparacion con `prep_` adelante. Para diagnosticar que
+/// empuja una decision (step 3.7, `DECKGYM_VALUE_BREAKDOWN` en el grabador de replays).
+pub fn prep_value_breakdown(
+    state: &State,
+    myself: usize,
+    params: &ValueFunctionParams,
+    prep: &PrepParams,
+) -> Vec<(&'static str, f64)> {
+    let mut upstream = *params;
+    if prep.turns_to_win != 0.0 {
+        upstream.turns_until_opponent_wins = 0.0;
+    }
+    let mut terms = super::value_functions::parametric_breakdown(state, myself, &upstream);
+    let opponent = (myself + 1) % 2;
+    let mut scratch = None;
+    let mine = analyze(state, myself, myself, prep, &mut scratch);
+    let theirs = analyze(state, opponent, myself, prep, &mut scratch);
+    terms.extend([
+        ("prep_damage", prep.prep_damage * (mine.damage - theirs.damage)),
+        ("prep_turns_to_win", prep.turns_to_win * (theirs.turns_to_win - mine.turns_to_win)),
+        ("prep_lock", prep.lock * (mine.lock - theirs.lock)),
+        ("prep_held", prep.held * (mine.held - theirs.held)),
+        ("prep_reach", prep.reach * (mine.reach - theirs.reach)),
+        (
+            "prep_generator",
+            prep.generator * (energy_generators(state, myself) - energy_generators(state, opponent)),
+        ),
+    ]);
+    terms
+}
+
+/// Pokemon en juego de `player` que se cargan energia solos cada turno con su habilidad (de la zona
+/// o del descarte, a si mismos o al activo). No cuentan los que cortan el turno al usarla ni los que
+/// solo cargan desde la banca si estan de activo.
+pub(crate) fn energy_generators(state: &State, player: usize) -> f64 {
+    state
+        .enumerate_in_play_pokemon(player)
+        .filter(|(idx, pokemon)| match get_ability_mechanic(&pokemon.card) {
+            Some(
+                AbilityMechanic::AttachEnergyFromZoneToActiveTypedPokemon { .. }
+                | AbilityMechanic::AttachEnergyFromZoneToYourTypedPokemon { .. }
+                | AbilityMechanic::AttachEnergyFromZoneToSelf { .. }
+                | AbilityMechanic::AttachEnergyFromZoneToSelfAndDamage { .. }
+                | AbilityMechanic::AttachEnergyFromDiscardToSelfAndDamage { .. },
+            ) => true,
+            Some(AbilityMechanic::AttachEnergyFromDiscardToActiveFromBench) => *idx != 0,
+            _ => false,
+        })
+        .count() as f64
+}
+
+/// Como [`loaded_prep_value_function`] con los coeficientes de otros archivos: el p<n> sombra del
+/// asiento humano (`DECKGYM_SHADOW_PREP_PARAMS` y `DECKGYM_SHADOW_VALUE_PARAMS`) puede puntuar con
+/// parametros distintos a los del rival, para volver a puntuar partidas grabadas con un arreglo
+/// nuevo. Sin `upstream`, los de `DECKGYM_VALUE_PARAMS`.
+pub fn prep_value_function_from(
+    params: PrepParams,
+    upstream: Option<ValueFunctionParams>,
+) -> impl Fn(&State, usize) -> f64 {
+    move |state, myself| {
+        let upstream = upstream.as_ref().unwrap_or_else(|| ValueFunctionParams::loaded());
+        prep_value_function(state, myself, upstream, &params)
+    }
 }
 
 /// Lo que `player` puede llegar a hacer contra el otro jugador

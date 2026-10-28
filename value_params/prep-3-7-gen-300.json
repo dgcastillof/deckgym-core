@@ -1,0 +1,14 @@
+{
+  "prep_damage": 2,
+  "turns_to_win": 100,
+  "turn_discount": 0.5,
+  "bench": 1,
+  "deck_evolution": 0.25,
+  "max_turns": 3,
+  "lock": 8,
+  "held": 8,
+  "reach": 300,
+  "reach_bench": 0.5,
+  "choices": true,
+  "generator": 300
+}

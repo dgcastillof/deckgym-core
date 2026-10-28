@@ -199,6 +199,65 @@ pub fn parametric_value_function(
     score
 }
 
+/// Cada termino de [`parametric_value_function`] ya multiplicado por su coeficiente (suman el
+/// puntaje), para diagnosticar que empuja una decision (step 3.7, `DECKGYM_VALUE_BREAKDOWN`).
+pub fn parametric_breakdown(
+    state: &State,
+    myself: usize,
+    params: &ValueFunctionParams,
+) -> Vec<(&'static str, f64)> {
+    let opponent = (myself + 1) % 2;
+    let mut pricer = AttackPricer::new(state, params.real_damage);
+    let (my, opp) = (
+        extract_features(state, myself, params, &mut pricer),
+        extract_features(state, opponent, params, &mut pricer),
+    );
+    vec![
+        ("points", (my.points - opp.points) * params.points),
+        ("pokemon_value", (my.pokemon_value - opp.pokemon_value) * params.pokemon_value),
+        ("hand_size", (my.hand_size - opp.hand_size) * params.hand_size),
+        ("deck_size", (opp.deck_size - my.deck_size) * params.deck_size),
+        ("active_retreat_cost", -my.active_retreat_cost * params.active_retreat_cost),
+        (
+            "active_pokemon_online_score",
+            (my.active_pokemon_online_score - opp.active_pokemon_online_score)
+                * params.active_pokemon_online_score,
+        ),
+        ("active_safety", (my.active_safety - opp.active_safety) * params.active_safety),
+        ("active_has_tool", (my.active_has_tool - opp.active_has_tool) * params.active_has_tool),
+        ("is_winner", (my.is_winner - opp.is_winner) * params.is_winner),
+        (
+            "turns_until_opponent_wins",
+            (my.turns_until_opponent_wins - opp.turns_until_opponent_wins)
+                * params.turns_until_opponent_wins,
+        ),
+        (
+            "online_pokemon_count",
+            (my.online_pokemon_count - opp.online_pokemon_count) * params.online_pokemon_count,
+        ),
+        (
+            "energy_distance_to_online",
+            (my.energy_distance_to_online - opp.energy_distance_to_online)
+                * params.energy_distance_to_online,
+        ),
+        ("opponent_discard_size", opp.discard_size * params.opponent_discard_size),
+        ("active_damage", (opp.active_damage - my.active_damage) * params.active_damage),
+        ("bench_hp", (my.bench_hp - opp.bench_hp) * params.bench_hp),
+        ("bench_count", (my.bench_count - opp.bench_count) * params.bench_count),
+        ("evolution_stage", (my.evolution_stage - opp.evolution_stage) * params.evolution_stage),
+        (
+            "evolutions_in_hand",
+            (my.evolutions_in_hand - opp.evolutions_in_hand) * params.evolutions_in_hand,
+        ),
+        ("active_status", (opp.active_status - my.active_status) * params.active_status),
+        ("can_ko_active", (my.can_ko_active - opp.can_ko_active) * params.can_ko_active),
+        ("attached_energy", (my.attached_energy - opp.attached_energy) * params.attached_energy),
+        ("energy_damage", (my.energy_damage - opp.energy_damage) * params.energy_damage),
+        ("status_damage", (my.status_damage - opp.status_damage) * params.status_damage),
+        ("bench_online", (my.bench_online - opp.bench_online) * params.bench_online),
+    ]
+}
+
 /// Features extracted from a player's game state
 #[derive(Debug)]
 struct Features {
