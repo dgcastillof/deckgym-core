@@ -33,6 +33,9 @@ pub struct ReplayRecorder {
     /// sample limit).
     recording: bool,
     current: Option<Replay>,
+    /// Con `DECKGYM_REPLAY_LIVE` (el asiento humano del visor): ademas del replay al final, cada
+    /// jugada se agrega al momento a `<game_id>.live.jsonl` para mostrar la partida en curso.
+    live: Option<PathBuf>,
 }
 
 impl ReplayRecorder {
@@ -47,8 +50,54 @@ impl ReplayRecorder {
             sample_limit,
             recording: false,
             current: None,
+            live: None,
         }
     }
+
+    fn append_live(&self, value: &serde_json::Value) {
+        let Some(path) = self.live.as_ref() else {
+            return;
+        };
+        use std::io::Write;
+        let result = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut f| {
+                let mut line = serde_json::to_vec(value)?;
+                line.push(b'\n');
+                f.write_all(&line)
+            });
+        if let Err(e) = result {
+            warn!("Failed to append live replay line to {:?}: {}", path, e);
+        }
+    }
+}
+
+/// Con `DECKGYM_VALUE_BREAKDOWN`, los terminos de la funcion de valor de p<n> desde el jugador 0, con
+/// los coeficientes de `DECKGYM_VALUE_PARAMS` y de `DECKGYM_BREAKDOWN_PREP_PARAMS` (o
+/// `DECKGYM_PREP_PARAMS`)
+fn value_breakdown(state: &State) -> Option<Vec<(String, f64)>> {
+    use crate::players::own_value::{prep_value_breakdown, PrepParams};
+    use crate::players::ValueFunctionParams;
+    use std::sync::OnceLock;
+    static PREP: OnceLock<Option<PrepParams>> = OnceLock::new();
+    let prep = PREP.get_or_init(|| {
+        std::env::var_os("DECKGYM_VALUE_BREAKDOWN")?;
+        Some(match std::env::var("DECKGYM_BREAKDOWN_PREP_PARAMS") {
+            Ok(path) if !path.is_empty() => PrepParams::from_json_file(&path)
+                .unwrap_or_else(|e| panic!("Invalid DECKGYM_BREAKDOWN_PREP_PARAMS: {e}")),
+            _ => *PrepParams::loaded(),
+        })
+    });
+    let prep = prep.as_ref()?;
+    Some(
+        prep_value_breakdown(state, 0, ValueFunctionParams::loaded(), prep)
+            .into_iter()
+            .filter(|(_, v)| *v != 0.0)
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+    )
 }
 
 impl SimulationEventHandler for ReplayRecorder {
@@ -89,6 +138,20 @@ impl SimulationEventHandler for ReplayRecorder {
             final_state: None,
             outcome: None,
         });
+
+        if std::env::var_os("DECKGYM_REPLAY_LIVE").is_some() {
+            let _ = fs::create_dir_all(&self.output_dir);
+            self.live = Some(self.output_dir.join(format!("{game_id}.live.jsonl")));
+            if let Some(replay) = self.current.as_ref() {
+                self.append_live(&serde_json::json!({
+                    "type": "start",
+                    "game_id": replay.game_id,
+                    "seed": replay.seed,
+                    "players": replay.players,
+                    "cards": replay.cards,
+                }));
+            }
+        }
     }
 
     fn on_action(
@@ -124,7 +187,13 @@ impl SimulationEventHandler for ReplayRecorder {
             chosen,
             note: None,
             scores: None,
+            breakdown: value_breakdown(state_before_action),
         });
+        if self.live.is_some() {
+            if let Some(step) = self.current.as_ref().and_then(|r| r.steps.last()) {
+                self.append_live(&serde_json::json!({"type": "step", "step": step}));
+            }
+        }
     }
 
     fn on_action_note(&mut self, _game_id: Uuid, note: Option<String>) {
@@ -145,6 +214,11 @@ impl SimulationEventHandler for ReplayRecorder {
         };
         replay.final_state = Some(ViewState::omniscient(&state));
         replay.outcome = result;
+        self.append_live(&serde_json::json!({
+            "type": "end",
+            "final_state": replay.final_state,
+            "outcome": replay.outcome,
+        }));
 
         if let Err(e) = fs::create_dir_all(&self.output_dir) {
             warn!(

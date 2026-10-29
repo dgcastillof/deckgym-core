@@ -737,3 +737,29 @@ button {
     overflow: visible;
   }
 }
+
+/* Partidas contra el bot (play/PlayApp.tsx) */
+.play-log {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.play-option {
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  width: 100%;
+}
+
+.play-option:disabled {
+  opacity: 0.5;
+}
+
+.play-error {
+  white-space: pre-wrap;
+  font-size: 11px;
+  max-height: 160px;
+  overflow: auto;
+}

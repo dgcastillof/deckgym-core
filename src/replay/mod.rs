@@ -55,6 +55,10 @@ pub struct ReplayStep {
     /// replays recorded before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scores: Option<Vec<f64>>,
+    /// Con `DECKGYM_VALUE_BREAKDOWN`: cada termino de la funcion de valor de p<n> en la foto de
+    /// este paso, desde el jugador 0 (step 3.7, para diagnosticar decisiones).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breakdown: Option<Vec<(String, f64)>>,
 }
 
 /// A full recorded game: enough to render every state it passed through without re-running the

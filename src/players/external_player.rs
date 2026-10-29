@@ -43,6 +43,10 @@ pub struct ExternalPlayer {
     ply: u32,
     last_note: Option<String>,
     last_scores: Option<Vec<f64>>,
+    /// Un bot del motor que puntua cada decision sin jugarla (`DECKGYM_EXTERNAL_SHADOW`, el asiento
+    /// humano del visor): sus puntajes van al replay en lugar de los del bot externo, para comparar
+    /// la jugada de una persona con la que habria hecho el bot desde la misma mesa.
+    shadow: Option<Box<dyn Player>>,
 }
 
 /// What a bot's reply to a `decide` message carries.
@@ -87,7 +91,37 @@ impl ExternalPlayer {
             ply: 0,
             last_note: None,
             last_scores: None,
+            shadow: None,
         }
+    }
+
+    pub fn with_shadow(mut self, shadow: Box<dyn Player>) -> Self {
+        self.shadow = Some(shadow);
+        self
+    }
+
+    /// Los puntajes del bot sombra en esta decision, con una copia del rng para no cambiar la
+    /// partida (con o sin sombra, la misma semilla da la misma partida).
+    fn shadow_scores(
+        &mut self,
+        rng: &StdRng,
+        state: &State,
+        possible_actions: &[Action],
+    ) -> Option<(Action, Option<Vec<f64>>)> {
+        let shadow = self.shadow.as_mut()?;
+        let mut rng = rng.clone();
+        let choice = shadow.decision_fn(&mut rng, state, possible_actions);
+        Some((choice, shadow.last_scores().filter(|s| s.len() == possible_actions.len())))
+    }
+
+    /// Con `DECKGYM_SHADOW_TAKEOVER=<n>`, desde la decision n del bot externo (contando desde 1)
+    /// juega la sombra: para ver a donde llega el bot desde una posicion de la partida de una
+    /// persona.
+    fn shadow_takes_over(&self) -> bool {
+        static FROM: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+        let from =
+            FROM.get_or_init(|| std::env::var("DECKGYM_SHADOW_TAKEOVER").ok()?.parse().ok());
+        from.is_some_and(|n| self.ply >= n)
     }
 
     fn ensure_spawned(&mut self, you: usize) -> Result<(), String> {
@@ -231,7 +265,7 @@ impl Player for ExternalPlayer {
 
     fn decision_fn(
         &mut self,
-        _rng: &mut StdRng,
+        rng: &mut StdRng,
         state: &State,
         possible_actions: &[Action],
     ) -> Action {
@@ -247,10 +281,21 @@ impl Player for ExternalPlayer {
             .ensure_spawned(actor)
             .and_then(|()| self.ask_bot(actor, state, possible_actions));
 
+        // Despues de la respuesta, para que la persona no espere a la sombra para ver sus opciones
+        let (shadow_choice, shadow_scores) = match self.shadow_scores(rng, state, possible_actions) {
+            Some((choice, scores)) => (Some(choice), scores),
+            None => (None, None),
+        };
+        if let (Some(choice), true) = (shadow_choice, self.shadow_takes_over()) {
+            self.last_note = Some("[sombra]".to_string());
+            self.last_scores = shadow_scores;
+            return choice;
+        }
+
         match outcome {
             Ok(BotReply { i, note, scores }) if i < possible_actions.len() => {
                 self.last_note = note;
-                self.last_scores = scores;
+                self.last_scores = shadow_scores.or(scores);
                 possible_actions[i].clone()
             }
             Ok(BotReply { i, .. }) => {
