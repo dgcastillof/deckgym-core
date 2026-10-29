@@ -88,6 +88,7 @@ de upstream. Estan en la lista blanca porque ya estaban hechos antes de la regla
 cambios ahi, y la salida limpia es mandarlos upstream (ver abajo) o moverlos a un jugador propio.
 La escalera (`scripts/deckgym-ladder.mjs`) marca como referencia a los jugadores de upstream y compara
 el mejor nuestro contra el mejor de deckgym.
+Excepcion del 3.7 (29/10): la sombra p2 del asiento humano quedo en `external_player.rs` y `parametric_breakdown` en `value_functions.rs`, aceptados en la lista blanca de `scripts/deckgym-fork-check.mjs`; la salida limpia es moverlos a un jugador propio (`own_*.rs`).
 
 ## Sincronizar con upstream
 
