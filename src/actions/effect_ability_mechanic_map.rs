@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use crate::actions::abilities::AbilityMechanic;
+use crate::card_ids::CardId;
 use crate::effects::CardEffect;
 use crate::models::{Card, EnergyType, StatusCondition};
 
@@ -204,8 +205,21 @@ pub static EFFECT_ABILITY_MECHANIC_MAP: LazyLock<HashMap<&'static str, AbilityMe
             AbilityMechanic::VictreebelFragranceTrap,
         );
         map.insert(
+            "Once during your turn, you may use this Ability. Put a Sweet Honey rental card into your hand.",
+            AbilityMechanic::PutRentalCardInHand {
+                card_id: CardId::C1119SweetHoney,
+            },
+        );
+        map.insert(
             "If this Pokémon would be Knocked Out by damage from an attack, flip a coin. If heads, this Pokémon is not Knocked Out, and its remaining HP becomes 10.",
             AbilityMechanic::CoinFlipToSurviveKnockOut,
+        );
+        map.insert(
+            "As long as this Pokémon is in play, flip 3 more coins for the Rabbit Jumping attack used by your Pokémon.",
+            AbilityMechanic::FlipMoreCoinsForNamedAttack {
+                attack_title: "Rabbit Jumping".to_string(),
+                extra_coins: 3,
+            },
         );
         map.insert(
             "If you have Arceus or Arceus ex in play, attacks used by this Pokémon cost 1 less [C] Energy.",
@@ -321,6 +335,12 @@ pub static EFFECT_ABILITY_MECHANIC_MAP: LazyLock<HashMap<&'static str, AbilityMe
             AbilityMechanic::PutRandomToolsFromDiscardToHandOnEvolve { amount: 2 },
         );
         map.insert(
+            "Once during your turn, when you play this card from your hand to evolve 1 of your Pokémon, you may use this Ability. Put a random Frogadier from your deck onto your Bench.",
+            AbilityMechanic::PutRandomNamedFromDeckOnBenchOnEvolve {
+                name: "Frogadier".to_string(),
+            },
+        );
+        map.insert(
             "Once during your turn, when you play this Pokémon from your hand to evolve 1 of your Pokémon, you may put a Supporter card from your discard pile into your hand.",
             AbilityMechanic::PutSupporterFromDiscardToHandOnEvolve,
         );
@@ -383,6 +403,10 @@ pub static EFFECT_ABILITY_MECHANIC_MAP: LazyLock<HashMap<&'static str, AbilityMe
         map.insert(
             "Once during your turn, you may heal 20 damage from your Active Pokémon.",
             AbilityMechanic::HealActiveYourPokemon { amount: 20 },
+        );
+        map.insert(
+            "Once during your turn, you may heal 30 damage from your Active Pokémon.",
+            AbilityMechanic::HealActiveYourPokemon { amount: 30 },
         );
         map.insert(
             "Once during your turn, you may heal 30 damage from each of your [W] Pokémon.",
@@ -468,6 +492,12 @@ pub static EFFECT_ABILITY_MECHANIC_MAP: LazyLock<HashMap<&'static str, AbilityMe
             },
         );
         map.insert(
+            "Once during your turn, you may take a [L] Energy from your Energy Zone and attach it to the [L] Pokémon in the Active Spot.",
+            AbilityMechanic::AttachEnergyFromZoneToActiveTypedPokemon {
+                energy_type: EnergyType::Lightning,
+            },
+        );
+        map.insert(
             "Once during your turn, you may take a [P] Energy from your Energy Zone and attach it to the [P] Pokémon in the Active Spot.",
             AbilityMechanic::AttachEnergyFromZoneToActiveTypedPokemon {
                 energy_type: EnergyType::Psychic,
@@ -504,6 +534,13 @@ pub static EFFECT_ABILITY_MECHANIC_MAP: LazyLock<HashMap<&'static str, AbilityMe
         map.insert(
             "This Ability works if you have any Unown in play with an Ability other than GUARD. All of your Pokémon take -10 damage from attacks from your opponent's Pokémon.",
             AbilityMechanic::ReduceDamageToAllYourPokemonWithOtherUnown { amount: 10 },
+        );
+        map.insert(
+            "As long as this Pokémon is in play, all of your [M] Pokémon take -20 damage from attacks from your opponent's Pokémon. This effect doesn't stack.",
+            AbilityMechanic::ReduceDamageToYourTypeWhileInPlay {
+                amount: 20,
+                energy_type: EnergyType::Metal,
+            },
         );
         map.insert(
             "This Ability works if you have any Unown in play with an Ability other than POWER. Attacks used by your Pokémon do +10 damage to your opponent's Active Pokémon.",
@@ -580,6 +617,14 @@ pub static EFFECT_ABILITY_MECHANIC_MAP: LazyLock<HashMap<&'static str, AbilityMe
                 energy_type: EnergyType::Darkness,
                 amount: 20,
                 only_turn_energy: true,
+            },
+        );
+        map.insert(
+            "Whenever you attach a [R] Energy from your Energy Zone to this Pokémon, do 30 damage to your opponent's Active Pokémon.",
+            AbilityMechanic::DamageOpponentActiveOnZoneAttachToSelf {
+                energy_type: EnergyType::Fire,
+                amount: 30,
+                only_turn_energy: false,
             },
         );
         map.insert(

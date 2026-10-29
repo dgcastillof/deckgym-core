@@ -204,6 +204,18 @@ pub(crate) fn on_evolve(
         | Some(AbilityMechanic::PreventAllDamageAndEffectsOnEvolve) => {
             offer_on_evolve_ability(actor, state, in_play_idx);
         }
+        Some(AbilityMechanic::PutRandomNamedFromDeckOnBenchOnEvolve { name }) => {
+            let has_target = state.decks[actor]
+                .cards
+                .iter()
+                .any(|card| card.get_name() == *name);
+            let has_space = state.in_play_pokemon[actor]
+                .iter()
+                .any(|slot| slot.is_none());
+            if has_target && has_space {
+                offer_on_evolve_ability(actor, state, in_play_idx);
+            }
+        }
         Some(AbilityMechanic::DiscardRandomEnergyFromOpponentActiveOnEvolve) => {
             let opponent = (actor + 1) % 2;
             let has_energy = state
@@ -778,6 +790,39 @@ fn get_steel_apron_reduction(
     0
 }
 
+fn get_eviolite_reduction(
+    state: &State,
+    attacking_player: usize,
+    (target_player, target_idx): (usize, usize),
+    is_from_active_attack: bool,
+) -> u32 {
+    if !is_from_active_attack || attacking_player == target_player {
+        return 0;
+    }
+
+    let defending_pokemon = &state.in_play_pokemon[target_player][target_idx]
+        .as_ref()
+        .expect("Defending Pokemon should be there when checking Eviolite");
+    // Eviolite: "The Basic Pokémon this card is attached to takes -20 damage..."
+    if has_tool(defending_pokemon, CardId::C1123Eviolite) && defending_pokemon.card.is_basic() {
+        debug!("Eviolite: Reducing damage by 20");
+        return 20;
+    }
+    0
+}
+
+/// Light Ball: "Attacks used by the Pikachu ex this card is attached to do +30 damage to your
+/// opponent's Active Pokémon."
+fn get_light_ball_damage_bonus(attacking_pokemon: &PlayedCard) -> u32 {
+    if has_tool(attacking_pokemon, CardId::C1124LightBall)
+        && attacking_pokemon.get_name() == "Pikachu ex"
+    {
+        debug!("Light Ball: Increasing damage by 30");
+        return 30;
+    }
+    0
+}
+
 fn get_intimidating_fang_reduction(
     state: &State,
     attacking_ref: (usize, usize),
@@ -901,12 +946,27 @@ fn get_ability_damage_reduction(
         })
         .sum();
 
+    // Melmetal's Metal Scrum: an aura over the owner's [M] Pokémon that doesn't stack, so the
+    // largest cut among the Melmetal in play applies once.
+    let type_aura_reduction: u32 = state
+        .enumerate_in_play_pokemon(target_player)
+        .filter_map(|(_, pokemon)| match pokemon.ability_mechanic() {
+            Some(AbilityMechanic::ReduceDamageToYourTypeWhileInPlay {
+                amount,
+                energy_type,
+            }) if from_opponent && receiving_pokemon.is_type(*energy_type) => Some(*amount),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+
     effect_reduction
         + arceus_reduction
         + attacker_type_reduction
         + full_hp_reduction
         + same_name_reduction
         + unown_guard_reduction
+        + type_aura_reduction
 }
 
 /// How many of `player`'s in-play Pokémon share `name`.
@@ -1192,10 +1252,12 @@ fn get_reduced_from_ex_card_effect_modifiers(
 /// Growl-type cuts ("attacks used by the Defending Pokémon do -N damage"): an effect on the
 /// *Attacking* Pokémon, so it reduces every opposing target of its attacks, Benched ones included,
 /// and is applied before Weakness. Ability and status damage is not an attack and is not cut.
+/// Also covers a named-attack cut on its own user (`ReducedDamageForAttack`, Deoxys's Psycho Boost).
 fn get_attacker_reduced_attack_damage(
     attacking_pokemon: &crate::models::PlayedCard,
     is_from_active_attack: bool,
     is_against_opponent: bool,
+    attack_name: Option<&str>,
 ) -> u32 {
     if !is_from_active_attack || !is_against_opponent {
         return 0;
@@ -1205,6 +1267,10 @@ fn get_attacker_reduced_attack_damage(
         .iter()
         .filter_map(|effect| match effect {
             CardEffect::ReducedAttackDamage { amount } => Some(*amount),
+            CardEffect::ReducedDamageForAttack {
+                attack_name: effect_attack_name,
+                amount,
+            } if Some(effect_attack_name.as_str()) == attack_name => Some(*amount),
             _ => None,
         })
         .sum::<u32>()
@@ -1559,6 +1625,16 @@ pub(crate) fn modify_damage(
             is_from_active_attack,
         )
     };
+    let eviolite_reduction = if skip_target_effects {
+        0
+    } else {
+        get_eviolite_reduction(
+            state,
+            attacking_player,
+            (target_player, target_idx),
+            is_from_active_attack,
+        )
+    };
     let ability_damage_reduction = if skip_target_effects {
         0
     } else {
@@ -1672,6 +1748,12 @@ pub(crate) fn modify_damage(
         0
     };
 
+    let light_ball_damage_bonus = if is_active_to_active {
+        get_light_ball_damage_bonus(attacking_pokemon)
+    } else {
+        0
+    };
+
     debug!(
         "Attack: {:?}, IncreasedDamage: {}, IncreasedAttackSpecific: {}, IncreasedVulnerability: {}, ReducedDamage: {}, TurnEffectReduction: {}, HeavyHelmet: {}, MetalCoreBarrier: {}, SteelApron: {}, IntimidatingFang: {}, AbilityReduction: {}, AbilityIncrease: {}, TypeBoost: {}, StadiumBonus: {}, FutureBooster: {}",
         base_damage,
@@ -1710,12 +1792,14 @@ pub(crate) fn modify_damage(
         + type_boost_bonus
         + stadium_damage_bonus
         + future_booster_damage_bonus
-        + beastite_damage_bonus;
+        + beastite_damage_bonus
+        + light_ball_damage_bonus;
     let attacker_side_damage =
         attacker_side_damage.saturating_sub(get_attacker_reduced_attack_damage(
             attacking_pokemon,
             is_from_active_attack,
             attacking_player != target_player,
+            context.attack_name,
         ));
     // An attack cut to 0 (or below) here does no damage, so Weakness has nothing to add to: it is
     // treated like an attack whose own damage is 0. Not yet recorded in game; see #426.
@@ -1738,6 +1822,7 @@ pub(crate) fn modify_damage(
             + heavy_helmet_reduction
             + metal_core_barrier_reduction
             + steel_apron_reduction
+            + eviolite_reduction
             + intimidating_fang_reduction
             + ability_damage_reduction,
     );

@@ -780,6 +780,8 @@ pub enum Mechanic {
     /// Machop's Shatter / Conkeldurr's Bedrock Breaker: discard the Stadium in play, if any.
     /// Stadium effects apply to both players, so there is no choice to make.
     DiscardStadiumInPlay,
+    /// Palkia's Spacial Rend: discard the Stadium in play only if the opponent put it into play.
+    DiscardOpponentStadiumInPlay,
     /// Smeargle's Splatter Coating: re-roll the type of one random Energy attached to the
     /// opponent's Active Pokémon into one of the 8 basic Energy types, uniformly at random.
     RandomizeOpponentActiveEnergyType,
@@ -798,6 +800,13 @@ pub enum Mechanic {
     /// Kyogre's Tidal Blast: discard the listed Energy from the attacking Pokémon, then deal
     /// `damage` to EVERY one of the opponent's Pokémon.
     SelfDiscardEnergyAndDamageAllOpponentPokemon {
+        energies: Vec<EnergyType>,
+        damage: u32,
+    },
+    /// Dewgong's Dual Blizzard: discard the listed Energy from the attacking Pokémon, then deal
+    /// `damage` to each of 2 of the opponent's Pokémon of the attacker's choice (all of them if
+    /// fewer than 2 are in play).
+    SelfDiscardEnergyAndDamageTwoOpponentPokemon {
         energies: Vec<EnergyType>,
         damage: u32,
     },
@@ -968,10 +977,20 @@ pub enum Mechanic {
     InflictPoisonWithDamage {
         poison_damage: u32,
     },
+    /// Jigglypuff's Soothing Lullaby: the opponent's Active Pokémon is now Asleep, but its owner
+    /// flips `num_coins` coins at each Checkup instead of 1 and it recovers only if all of them
+    /// are heads.
+    InflictSleepWithCoins {
+        num_coins: usize,
+    },
     /// Delcatty's Energy Blender: after damage, the attacker may freely redistribute the Energy
     /// attached to their own Pokémon in play. Resolved one Energy at a time through
     /// `SimpleAction::MoveEnergyAndReoffer`; see that variant for why.
     MoveOwnEnergyAnyWay,
+    /// Lunala's Wings of the Moone: after damage, move ALL Energy from the attacker to its Benched
+    /// Pokémon in any way the player likes (one Energy at a time through
+    /// `SimpleAction::MoveActiveEnergyToBenchAndReoffer`).
+    MoveAllEnergyToBenchAnyWay,
     /// Mesprit's Supreme Blast: usable only while every Pokémon named in `required_bench_names` is
     /// on the attacker's Bench; on use, all Energy is discarded from the attacking Pokémon. The
     /// usability half is enforced in `move_generation::attacks`, which consults this variant.
@@ -1184,6 +1203,13 @@ pub enum Mechanic {
         count: usize,
         damage_per_match: u32,
         criterion: RevealCriterion,
+    },
+    /// Vespiquen's Honey Rush: reveal all cards named `card_name` in your hand; the attack does
+    /// `damage_per_card` for each. The attack's `fixed_damage` is the per-card amount, so it is
+    /// not added as a base. Revealed cards stay in hand.
+    DamagePerNamedCardInHand {
+        card_name: String,
+        damage_per_card: u32,
     },
     /// Chatot's Mimic / Mime Jr.'s Mime-y Shuffle: shuffle your hand into your deck, then draw a
     /// card for each card in your opponent's hand.

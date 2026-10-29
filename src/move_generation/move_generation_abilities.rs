@@ -108,9 +108,11 @@ fn can_use_ability_by_mechanic(
         AbilityMechanic::ReduceDamageFromAttacksIfFullHp { .. } => false,
         AbilityMechanic::BuffIfAnotherSameNameInPlay { .. } => false,
         AbilityMechanic::ReduceDamageToAllYourPokemonWithOtherUnown { .. } => false,
+        AbilityMechanic::ReduceDamageToYourTypeWhileInPlay { .. } => false,
         AbilityMechanic::IncreaseDamageOfYourPokemonWithOtherUnown { .. } => false,
         AbilityMechanic::IncreaseDamageForEvolvesFromWhileBenched { .. } => false,
         AbilityMechanic::IncreaseDamageWhenRemainingHpAtMost { .. } => false,
+        AbilityMechanic::FlipMoreCoinsForNamedAttack { .. } => false,
         AbilityMechanic::IncreaseDamageForTypeInPlay { .. } => false,
         AbilityMechanic::IncreaseDamageForTwoTypesInPlay { .. } => false,
         AbilityMechanic::StartTurnRandomPokemonToHand { .. } => false,
@@ -148,6 +150,7 @@ fn can_use_ability_by_mechanic(
         AbilityMechanic::DrawCardIfActive { .. } => _in_play_index == 0 && !card.ability_used,
         AbilityMechanic::ConfuseOpponentActive => _in_play_index == 0 && !card.ability_used,
         AbilityMechanic::BurnOpponentActive => !card.ability_used,
+        AbilityMechanic::PutRentalCardInHand { .. } => !card.ability_used,
         AbilityMechanic::RandomStatusConditionToOpponentActive { options } => {
             !card.ability_used
                 && !selectable_status_conditions(
@@ -240,6 +243,7 @@ fn can_use_ability_by_mechanic(
         // Offered by the on-evolve / on-bench hooks, not by free ability move generation.
         AbilityMechanic::PutRandomToolsFromDiscardToHandOnEvolve { .. } => false,
         AbilityMechanic::TakeItemsFromTopOfDeckOnEvolve { .. } => false,
+        AbilityMechanic::PutRandomNamedFromDeckOnBenchOnEvolve { .. } => false,
         AbilityMechanic::PutSupporterFromDiscardToHandOnEvolve => false,
         AbilityMechanic::OpponentShuffleHandAndDrawPerRemainingPointOnEvolve => false,
         AbilityMechanic::PreventAllDamageAndEffectsOnEvolve => false,

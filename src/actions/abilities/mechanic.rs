@@ -1,4 +1,7 @@
-use crate::models::{EnergyType, StatusCondition};
+use crate::{
+    card_ids::CardId,
+    models::{EnergyType, StatusCondition},
+};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum AbilityMechanic {
@@ -126,6 +129,13 @@ pub enum AbilityMechanic {
     ReduceDamageToAllYourPokemonWithOtherUnown {
         amount: u32,
     },
+    /// Melmetal's Metal Scrum: "As long as this Pokémon is in play, all of your `energy_type`
+    /// Pokémon take -`amount` damage from attacks from your opponent's Pokémon. This effect
+    /// doesn't stack." Resolved in `hooks::modify_damage`.
+    ReduceDamageToYourTypeWhileInPlay {
+        amount: u32,
+        energy_type: EnergyType,
+    },
     /// Unown POWER: "This Ability works if you have any Unown in play with an Ability other than
     /// POWER. Attacks used by your Pokémon do +`amount` damage to your opponent's Active
     /// Pokémon." Resolved in `hooks::modify_damage`.
@@ -138,6 +148,12 @@ pub enum AbilityMechanic {
     IncreaseDamageForEvolvesFromWhileBenched {
         evolves_from: String,
         amount: u32,
+    },
+    /// Raboot - Jumping Coach: the named attack, when used by any of your Pokémon, flips
+    /// `extra_coins` more coins for each Pokémon in play with this ability.
+    FlipMoreCoinsForNamedAttack {
+        attack_title: String,
+        extra_coins: usize,
     },
     IncreaseDamageWhenRemainingHpAtMost {
         amount: u32,
@@ -199,6 +215,12 @@ pub enum AbilityMechanic {
     PoisonOpponentActive,
     ConfuseOpponentActive,
     BurnOpponentActive,
+    /// Ribombee's Honey Gather: "Once during your turn, you may use this Ability. Put a Sweet
+    /// Honey rental card into your hand." The card is not taken from the deck: it is a new copy
+    /// of `card_id` (see questions file for the rental-card rules).
+    PutRentalCardInHand {
+        card_id: CardId,
+    },
     /// Team Rocket's Slowking ex's Evil Inspiration: "Once during your turn, if this Pokémon is
     /// in the Active Spot, you may draw a card." Unlike `EndTurnDrawCardIfActive`, this is an
     /// actively-used ability (offered any time during the turn, not just at its end).
@@ -399,6 +421,11 @@ pub enum AbilityMechanic {
     /// deck."
     TakeItemsFromTopOfDeckOnEvolve {
         amount: usize,
+    },
+    /// Frogadier's Sudden Duplication: "…when you play this Pokémon from your hand to evolve 1 of
+    /// your Pokémon, you may put a random Pokémon named `name` from your deck onto your Bench."
+    PutRandomNamedFromDeckOnBenchOnEvolve {
+        name: String,
     },
     /// Delcatty's Search for Friends: "…you may put a Supporter card from your discard pile into
     /// your hand." The player chooses which Supporter.

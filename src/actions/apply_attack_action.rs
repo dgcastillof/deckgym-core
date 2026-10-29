@@ -12,8 +12,9 @@ use crate::{
         },
         apply_evolve,
         attack_helpers::{
-            collect_in_play_indices_by_type, energy_any_way_choices, energy_blender_choices,
-            generate_distributions, total_attached_energy,
+            active_energy_to_bench_choices, collect_in_play_indices_by_type,
+            energy_any_way_choices, energy_blender_choices, generate_distributions,
+            total_attached_energy,
         },
         attacks::{BenchSide, CopyAttackSource, Mechanic, RevealCriterion},
         effect_mechanic_map::EFFECT_MECHANIC_MAP,
@@ -515,6 +516,7 @@ fn forecast_effect_attack_by_mechanic(
             *damage_per_head,
             *num_coins,
             attack,
+            state,
         ),
         Mechanic::ExtraDamageForEachHeadsSelfStatus {
             num_coins,
@@ -1229,10 +1231,16 @@ fn forecast_effect_attack_by_mechanic(
         Mechanic::InflictPoisonWithDamage { poison_damage } => {
             inflict_poison_with_damage(attack.fixed_damage, *poison_damage)
         }
+        Mechanic::InflictSleepWithCoins { num_coins } => {
+            inflict_sleep_with_coins(attack.fixed_damage, *num_coins)
+        }
         Mechanic::RequireBenchedNamesThenDiscardAllEnergy { .. } => {
             damage_and_discard_all_energy(attack.fixed_damage)
         }
         Mechanic::MoveOwnEnergyAnyWay => move_own_energy_any_way(attack.fixed_damage),
+        Mechanic::MoveAllEnergyToBenchAnyWay => {
+            move_all_energy_to_bench_any_way(attack.fixed_damage)
+        }
         Mechanic::ExtraDamageIfSameEnergyCountAsOpponent { extra_damage } => {
             extra_damage_if_same_energy_count_as_opponent(state, attack.fixed_damage, *extra_damage)
         }
@@ -1313,6 +1321,9 @@ fn forecast_effect_attack_by_mechanic(
             shuffle_opponent_tools_into_deck_before_damage(attack.fixed_damage)
         }
         Mechanic::DiscardStadiumInPlay => discard_stadium_in_play(attack.fixed_damage),
+        Mechanic::DiscardOpponentStadiumInPlay => {
+            discard_opponent_stadium_in_play(attack.fixed_damage)
+        }
         Mechanic::RandomizeOpponentActiveEnergyType => {
             randomize_opponent_active_energy_type(attack.fixed_damage)
         }
@@ -1324,6 +1335,9 @@ fn forecast_effect_attack_by_mechanic(
         }
         Mechanic::SelfDiscardEnergyAndDamageAllOpponentPokemon { energies, damage } => {
             self_discard_energy_and_damage_all_opponent_pokemon(state, energies.clone(), *damage)
+        }
+        Mechanic::SelfDiscardEnergyAndDamageTwoOpponentPokemon { energies, damage } => {
+            self_discard_energy_and_damage_two_opponent_pokemon(energies.clone(), *damage)
         }
         Mechanic::SelfDiscardEnergyAndChoiceBenchDamage {
             energies,
@@ -1471,6 +1485,10 @@ fn forecast_effect_attack_by_mechanic(
             damage_per_match,
             criterion,
         } => reveal_top_damage_per_match(state, *count, *damage_per_match, criterion),
+        Mechanic::DamagePerNamedCardInHand {
+            card_name,
+            damage_per_card,
+        } => damage_per_named_card_in_hand(state, card_name, *damage_per_card),
         Mechanic::ShuffleHandAndDrawPerOpponentHandCard => {
             shuffle_hand_and_draw_per_opponent_hand_card(attack.fixed_damage)
         }
@@ -1530,10 +1548,37 @@ fn inflict_poison_with_damage(damage: u32, poison_damage: u32) -> AttackOutcomes
     })
 }
 
+/// Jigglypuff - Soothing Lullaby: put the opponent's Active Pokémon to sleep, with its owner
+/// flipping `num_coins` coins at each Checkup instead of 1 and recovering only on all heads.
+fn inflict_sleep_with_coins(damage: u32, num_coins: usize) -> AttackOutcomes {
+    active_damage_effect_doutcome(damage, move |_, state, action| {
+        let opponent = (action.actor + 1) % 2;
+        state.apply_sleep_with_coins(opponent, 0, num_coins);
+    })
+}
+
 /// Whether the attacking Pokémon is still in the Active Spot and alive. Follow-up effects that act
 /// *from* the attacker (spot damage it deals, Energy it moves, a switch it makes) must not run
 /// after it has been knocked out — e.g. by Rocky Helmet recoil on the attack's own damage — both
 /// because the card says so and because `ApplyDamage` needs a live `attacking_ref`.
+/// Lunala - Wings of the Moone: after damage, all of the attacker's Energy has to go to its
+/// Benched Pokémon; the player picks where each one goes (see
+/// `SimpleAction::MoveActiveEnergyToBenchAndReoffer`).
+fn move_all_energy_to_bench_any_way(damage: u32) -> AttackOutcomes {
+    AttackOutcomes::single(AttackOutcome::damage_then_effect(
+        vec![(damage, true, 0)],
+        move |_, state, action| {
+            if !attacker_still_in_play(state, action.actor) {
+                return;
+            }
+            let choices = active_energy_to_bench_choices(state, action.actor);
+            if !choices.is_empty() {
+                state.move_generation_stack.push((action.actor, choices));
+            }
+        },
+    ))
+}
+
 fn attacker_still_in_play(state: &State, actor: usize) -> bool {
     state.in_play_pokemon[actor][0]
         .as_ref()
@@ -1945,6 +1990,19 @@ fn discard_stadium_in_play(damage: u32) -> AttackOutcomes {
     })
 }
 
+/// Palkia's Spacial Rend: discard the Stadium in play only if the opponent put it into play.
+fn discard_opponent_stadium_in_play(damage: u32) -> AttackOutcomes {
+    active_damage_effect_doutcome(damage, move |_, state, action| {
+        let opponent = (action.actor + 1) % 2;
+        if state.active_stadium_owner != Some(opponent) {
+            return;
+        }
+        if let Some((stadium, _)) = state.take_active_stadium() {
+            state.discard_piles[opponent].push(stadium);
+        }
+    })
+}
+
 /// Smeargle's Splatter Coating: re-roll one random Energy on the opponent's Active Pokémon into
 /// one of the 8 Energy Zone types, uniformly at random (the new type may equal the old one).
 fn randomize_opponent_active_energy_type(damage: u32) -> AttackOutcomes {
@@ -2008,6 +2066,42 @@ fn self_discard_energy_and_damage_any_opponent_pokemon(
     active_damage_effect_doutcome(0, move |_, state, action| {
         discard_requested_energy_from_active_best_effort(state, action.actor, &energies);
         push_direct_damage_choices(state, action, damage, false);
+    })
+}
+
+/// Dewgong's Dual Blizzard: discard the listed Energy from the attacker, then the attacker picks
+/// 2 of the opponent's Pokémon to take `damage` each (all of them if fewer than 2 are in play).
+fn self_discard_energy_and_damage_two_opponent_pokemon(
+    energies: Vec<EnergyType>,
+    damage: u32,
+) -> AttackOutcomes {
+    active_damage_effect_doutcome(0, move |_, state, action| {
+        discard_requested_energy_from_active_best_effort(state, action.actor, &energies);
+        let opponent = (action.actor + 1) % 2;
+        let in_play: Vec<usize> = state
+            .enumerate_in_play_pokemon(opponent)
+            .map(|(in_play_idx, _)| in_play_idx)
+            .collect();
+        let apply_to = |picked: Vec<usize>| SimpleAction::ApplyDamage {
+            attacking_ref: (action.actor, 0),
+            targets: picked
+                .into_iter()
+                .map(|idx| (damage, opponent, idx))
+                .collect(),
+            is_from_active_attack: true,
+        };
+        let choices: Vec<SimpleAction> = if in_play.len() <= 2 {
+            vec![apply_to(in_play)]
+        } else {
+            let mut pairs = Vec::new();
+            for i in 0..in_play.len() {
+                for j in (i + 1)..in_play.len() {
+                    pairs.push(apply_to(vec![in_play[i], in_play[j]]));
+                }
+            }
+            pairs
+        };
+        state.move_generation_stack.push((action.actor, choices));
     })
 }
 
@@ -3158,12 +3252,28 @@ fn generate_energy_distributions(
     all_choices
 }
 
+/// Raboot - Jumping Coach: extra coins for the named attack, once per Pokémon with the ability.
+fn extra_coins_from_abilities(state: &State, attack: &Attack) -> usize {
+    state
+        .enumerate_in_play_pokemon(state.current_player)
+        .filter_map(|(_, pokemon)| match pokemon.ability_mechanic() {
+            Some(AbilityMechanic::FlipMoreCoinsForNamedAttack {
+                attack_title,
+                extra_coins,
+            }) if *attack_title == attack.title => Some(*extra_coins),
+            _ => None,
+        })
+        .sum()
+}
+
 fn damage_for_each_heads_attack(
     include_fixed_damage: bool,
     damage_per_head: u32,
     num_coins: usize,
     attack: &Attack,
+    state: &State,
 ) -> AttackOutcomes {
+    let num_coins = num_coins + extra_coins_from_abilities(state, attack);
     let fixed_damage = if include_fixed_damage {
         attack.fixed_damage
     } else {
@@ -5217,15 +5327,8 @@ fn knock_back_attack(damage: u32) -> AttackOutcomes {
 fn mawile_crunch() -> AttackOutcomes {
     AttackOutcomes::binary_coin(
         active_damage_effect_outcome(20, move |rng, state, action| {
-            // Heads: damage + discard random energy
-            let opponent = (action.actor + 1) % 2;
-            let active = state.get_active_mut(opponent);
-
-            if !active.attached_energy.is_empty() {
-                let energy_count = active.attached_energy.len();
-                let rand_idx = rng.gen_range(0..energy_count);
-                active.attached_energy.remove(rand_idx);
-            }
+            // Heads: damage + discard random energy (Clear Veil / Crystal Body prevent it)
+            discard_random_energy_from_opponent_active(rng, state, action.actor, 1);
         }),
         active_damage_outcome(20), // Tails: just damage
     )
@@ -5957,6 +6060,19 @@ fn reveal_top_damage_per_match(
     active_damage_effect_doutcome(matches * damage_per_match, move |rng, state, action| {
         state.decks[action.actor].shuffle(false, rng);
     })
+}
+
+/// Vespiquen - Honey Rush: 50 damage for each Sweet Honey revealed from the hand.
+fn damage_per_named_card_in_hand(
+    state: &State,
+    card_name: &str,
+    damage_per_card: u32,
+) -> AttackOutcomes {
+    let revealed = state.hands[state.current_player]
+        .iter()
+        .filter(|card| card.get_name() == card_name)
+        .count() as u32;
+    active_damage_doutcome(revealed * damage_per_card)
 }
 
 fn reveal_criterion_matches(card: &Card, criterion: &RevealCriterion) -> bool {

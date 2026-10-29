@@ -241,6 +241,12 @@ pub static EFFECT_MECHANIC_MAP: LazyLock<HashMap<&'static str, Mechanic>> = Lazy
         },
     );
     map.insert(
+        "Discard a [G] Energy from this Pokémon.",
+        Mechanic::SelfDiscardEnergy {
+            energies: vec![EnergyType::Grass],
+        },
+    );
+    map.insert(
         "Discard a [R] Energy from this Pokémon.",
         Mechanic::SelfDiscardEnergy {
             energies: vec![EnergyType::Fire],
@@ -654,6 +660,14 @@ pub static EFFECT_MECHANIC_MAP: LazyLock<HashMap<&'static str, Mechanic>> = Lazy
         Mechanic::ExtraDamageForEachHeads {
             include_fixed_damage: false,
             damage_per_head: 100,
+            num_coins: 2,
+        },
+    );
+    map.insert(
+        "Flip 2 coins. This attack does 110 damage for each heads.",
+        Mechanic::ExtraDamageForEachHeads {
+            include_fixed_damage: false,
+            damage_per_head: 110,
             num_coins: 2,
         },
     );
@@ -1177,6 +1191,7 @@ pub static EFFECT_MECHANIC_MAP: LazyLock<HashMap<&'static str, Mechanic>> = Lazy
     map.insert("If any of your Pokémon were Knocked Out by damage from an attack during your opponent's last turn, this attack does 60 more damage.", Mechanic::ExtraDamageIfKnockedOutLastTurn { energy_type: None, extra_damage: 60, status: None });
     map.insert("If any of your Pokémon were Knocked Out by damage from an attack during your opponent's last turn, this attack does 40 more damage.", Mechanic::ExtraDamageIfKnockedOutLastTurn { energy_type: None, extra_damage: 40, status: None });
     map.insert("If any of your Pokémon were Knocked Out by damage from an attack during your opponent's last turn, this attack does 50 more damage.", Mechanic::ExtraDamageIfKnockedOutLastTurn { energy_type: None, extra_damage: 50, status: None });
+    map.insert("If any of your Pokémon were Knocked Out by damage from an attack during your opponent's last turn, this attack does 70 more damage.", Mechanic::ExtraDamageIfKnockedOutLastTurn { energy_type: None, extra_damage: 70, status: None });
     map.insert("If the Defending Pokémon is a Basic Pokémon, it can't attack during your opponent's next turn.", Mechanic::BlockBasicAttack);
     // Octillery - Octazooka. The effect lasts until the Defending Pokemon leaves the Active
     // Spot, which `u8::MAX` models: effects are cleared whenever a Pokemon leaves the Active
@@ -1637,6 +1652,14 @@ pub static EFFECT_MECHANIC_MAP: LazyLock<HashMap<&'static str, Mechanic>> = Lazy
         "Put a random card that evolves from Rockruff from your deck into your hand.",
         Mechanic::SearchToHandByEvolvesFrom {
             name: "Rockruff".to_string(),
+        },
+    );
+    // Vespiquen - Honey Rush
+    map.insert(
+        "Reveal all of the Sweet Honey in your hand, and this attack does 50 damage for each card you revealed in this way.",
+        Mechanic::DamagePerNamedCardInHand {
+            card_name: "Sweet Honey".to_string(),
+            damage_per_card: 50,
         },
     );
     // Golurk - Heavy Rocket
@@ -2107,6 +2130,15 @@ pub static EFFECT_MECHANIC_MAP: LazyLock<HashMap<&'static str, Mechanic>> = Lazy
         },
     );
     map.insert(
+        "This attack does 30 more damage for each of your opponent's Benched Pokémon.",
+        Mechanic::BenchCountDamage {
+            include_fixed_damage: true,
+            damage_per: 30,
+            energy_type: None,
+            bench_side: BenchSide::OpponentBench,
+        },
+    );
+    map.insert(
         "This attack does 30 damage for each of your Benched Pokémon.",
         Mechanic::BenchCountDamage {
             include_fixed_damage: false,
@@ -2311,10 +2343,21 @@ pub static EFFECT_MECHANIC_MAP: LazyLock<HashMap<&'static str, Mechanic>> = Lazy
 
     // ------------------------------------------------------------------------------------------
     // Attacks whose effect text is not present in the generated skeleton above.
+    map.insert(
+        "Look at a random card from your opponent's hand and shuffle it into their deck.",
+        Mechanic::ShuffleRandomOpponentHandCardIntoDeck,
+    );
     // ------------------------------------------------------------------------------------------
     map.insert(
         "Before doing damage, shuffle all Pokémon Tools from each of your opponent's Pokémon into their deck.",
         Mechanic::ShuffleOpponentToolsIntoDeckBeforeDamage,
+    );
+    map.insert(
+        "Discard 2 [W] Energy from this Pokémon, and this attack does 60 damage to 2 of your opponent's Pokémon.",
+        Mechanic::SelfDiscardEnergyAndDamageTwoOpponentPokemon {
+            energies: vec![EnergyType::Water, EnergyType::Water],
+            damage: 60,
+        },
     );
     map.insert(
         "Discard 3 [W] Energy from this Pokémon, and this attack does 50 damage to each of your opponent's Pokémon.",
@@ -2532,6 +2575,10 @@ pub static EFFECT_MECHANIC_MAP: LazyLock<HashMap<&'static str, Mechanic>> = Lazy
         },
     );
     map.insert("Discard a Stadium in play.", Mechanic::DiscardStadiumInPlay);
+    map.insert(
+        "If your opponent has a Stadium in play, discard it.",
+        Mechanic::DiscardOpponentStadiumInPlay,
+    );
     map.insert(
         "During your next turn, attacks used by your Pokémon do +20 damage to your opponent's Active Pokémon.",
         Mechanic::DamageAndTurnEffect {
@@ -3551,6 +3598,99 @@ pub static EFFECT_MECHANIC_MAP: LazyLock<HashMap<&'static str, Mechanic>> = Lazy
     map.insert(
         "Switch in 1 of your opponent's Benched Pokémon to the Active Spot. If you do, this attack does 50 damage to the new Active Pokémon.",
         Mechanic::SwitchOpponentBenchInAndDamage { damage: 50 },
+    );
+    // Espeon - Brainwave
+    map.insert(
+        "This attack does 20 more damage for each [P] Energy attached to this Pokémon.",
+        Mechanic::ExtraDamagePerSpecificEnergy {
+            energy_type: EnergyType::Psychic,
+            damage_per_energy: 20,
+        },
+    );
+    // Umbreon - Moonlit Raid
+    map.insert(
+        "If your opponent's Active Pokémon is a Basic Pokémon, this attack does 50 more damage.",
+        Mechanic::ExtraDamageIfDefenderIsBasic { extra_damage: 50 },
+    );
+    // Pidgeot - Clean Hit
+    map.insert(
+        "If your opponent's Active Pokémon is an Evolution Pokémon, this attack does 80 more damage.",
+        Mechanic::ExtraDamageIfDefenderIsEvolution { extra_damage: 80 },
+    );
+    // Whiscash - Power Press
+    map.insert(
+        "If this Pokémon has at least 3 extra [F] Energy attached, this attack does 60 more damage.",
+        Mechanic::ExtraDamageIfExtraEnergy {
+            required_extra_energy: vec![EnergyType::Fighting; 3],
+            extra_damage: 60,
+        },
+    );
+    // Porygon-Z - Overdrive Smash
+    map.insert(
+        "During your next turn, this Pokémon's Overdrive Smash attack does +50 damage.",
+        Mechanic::DamageAndCardEffect {
+            opponent: false,
+            effect: CardEffect::IncreasedDamageForAttack {
+                attack_name: "Overdrive Smash".to_string(),
+                amount: 50,
+            },
+            duration: 2,
+            coin_flip: false,
+        },
+    );
+    // Pupitar - Amass
+    map.insert(
+        "Take 2 [F] Energy from your Energy Zone and attach it to this Pokémon.",
+        Mechanic::SelfChargeActive {
+            energies: vec![EnergyType::Fighting, EnergyType::Fighting],
+        },
+    );
+    // Electrode - Self-Destruct
+    map.insert(
+        "This Pokémon also does 90 damage to itself.",
+        Mechanic::SelfDamage { amount: 90 },
+    );
+    // Eevee - Signs of Evolution
+    map.insert(
+        "Put a random card that evolves from Eevee from your deck into your hand.",
+        Mechanic::SearchToHandByEvolvesFrom {
+            name: "Eevee".to_string(),
+        },
+    );
+    // Malamar - Pester the Dizzy
+    map.insert(
+        "If your opponent's Active Pokémon is Confused, this attack does 90 more damage.",
+        Mechanic::ExtraDamageIfDefenderConfused { extra_damage: 90 },
+    );
+    // Pidgey - Find a Friend
+    map.insert(
+        "Put 1 random [C] Pokémon from your deck into your hand.",
+        Mechanic::SearchToHandByEnergy {
+            energy_type: EnergyType::Colorless,
+        },
+    );
+    // Jigglypuff - Soothing Lullaby
+    map.insert(
+        "Your opponent's Active Pokémon is now Asleep. Your opponent flips 2 coins for this Special Condition, and if any of them are tails, that Pokémon is still Asleep.",
+        Mechanic::InflictSleepWithCoins { num_coins: 2 },
+    );
+    // Deoxys - Psycho Boost
+    map.insert(
+        "During your next turn, this Pokémon's Psycho Boost does -50 damage.",
+        Mechanic::DamageAndCardEffect {
+            opponent: false,
+            effect: CardEffect::ReducedDamageForAttack {
+                attack_name: "Psycho Boost".to_string(),
+                amount: 50,
+            },
+            duration: 2,
+            coin_flip: false,
+        },
+    );
+    // Lunala - Wings of the Moone
+    map.insert(
+        "Move all Energy from this Pokémon to your Benched Pokémon in any way you like.",
+        Mechanic::MoveAllEnergyToBenchAnyWay,
     );
     map
 });
