@@ -1063,16 +1063,21 @@ pub(crate) fn handle_knockouts(
     // Losing an HP aura can knock out a Benched Pokemon after an earlier
     // knockout already queued promotion choices. Never offer a now-empty slot:
     // activating it would leave the Active Spot empty after the stack resolves.
+    // Lo mismo con una habilidad ofrecida (paso 4.12): Frogadier evoluciona con el dano de un
+    // Basico que vivia por Starting Plains, muere y su Sudden Duplication queda en la pila. El
+    // Noop de la oferta se conserva: en Victory Star es lo que resuelve el ataque en espera.
     let occupied = state
         .in_play_pokemon
         .each_ref()
         .map(|board| board.each_ref().map(Option::is_some));
-    for (_, choices) in &mut state.move_generation_stack {
+    for (actor, choices) in &mut state.move_generation_stack {
+        let actor = *actor;
         choices.retain(|choice| match choice {
             SimpleAction::Activate {
                 player,
                 in_play_idx,
             } => occupied[*player][*in_play_idx],
+            SimpleAction::UseAbility { in_play_idx } => occupied[actor][*in_play_idx],
             _ => true,
         });
     }

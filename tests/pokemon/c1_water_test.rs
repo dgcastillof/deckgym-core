@@ -3,7 +3,7 @@ use deckgym::{
     card_ids::CardId,
     database::get_card_by_enum,
     models::{EnergyType, PlayedCard},
-    test_support::{attack_action, get_test_game_with_board},
+    test_support::{attack_action, get_test_game_with_board, trainer_from_id},
 };
 
 /// Dewgong - Dual Blizzard: discard 2 [W] Energy from this Pokémon, and this attack does 60
@@ -221,5 +221,79 @@ fn test_frogadier_sudden_duplication_does_nothing_without_frogadier_in_deck() {
     }
     let state = game.get_state_clone();
     assert!(state.in_play_pokemon[0][1].is_none());
+    assert_eq!(state.decks[0].cards.len(), 1);
+}
+
+/// Paso 4.12: Froakie sigue vivo solo por los +20 de Starting Plains (a los Basicos). Al evolucionar
+/// pierde el bono y el Frogadier entra con 0 HP: el chequeo de KO lo saca de juego despues de que
+/// `on_evolve` encolo Sudden Duplication. La oferta no puede quedar apuntando al lugar vacio: los
+/// bots que pronostican todas las opciones entraban en panico con
+/// "Pokemon should be there if using ability".
+#[test]
+fn test_frogadier_knocked_out_by_evolving_does_not_offer_sudden_duplication() {
+    let mut game = get_test_game_with_board(
+        vec![
+            PlayedCard::from_id(CardId::C1040Froakie),
+            PlayedCard::from_id(CardId::A1001Bulbasaur),
+        ],
+        vec![PlayedCard::from_id(CardId::A1001Bulbasaur)],
+    );
+    let frogadier = get_card_by_enum(CardId::C1041Frogadier);
+    let mut state = game.get_state_clone();
+    state.hands[0] = vec![
+        get_card_by_enum(CardId::B2154StartingPlains),
+        frogadier.clone(),
+    ];
+    state.decks[0].cards = vec![get_card_by_enum(CardId::A1088Frogadier)];
+    game.set_state(state);
+
+    game.apply_action(&Action {
+        actor: 0,
+        action: SimpleAction::Play {
+            trainer_card: trainer_from_id(CardId::B2154StartingPlains),
+        },
+        is_stack: false,
+    });
+    // Froakie: 60 + 20 de Starting Plains. Frogadier: 70, sin bono
+    game.apply_action(&Action {
+        actor: 1,
+        action: SimpleAction::ApplyDamage {
+            attacking_ref: (1, 0),
+            targets: vec![(70, 0, 0)],
+            is_from_active_attack: false,
+        },
+        is_stack: false,
+    });
+    assert_eq!(game.get_state_clone().get_active(0).get_remaining_hp(), 10);
+
+    game.apply_action(&Action {
+        actor: 0,
+        action: SimpleAction::Evolve {
+            evolution: frogadier,
+            in_play_idx: 0,
+            from_deck: false,
+        },
+        is_stack: false,
+    });
+
+    let state = game.get_state_clone();
+    assert!(state.in_play_pokemon[0][0].is_none());
+    assert_eq!(state.points, [0, 1]);
+
+    // Como el jugador v, que pronostica cada opcion antes de elegir: todas tienen que poder resolverse
+    let (actor, choices) = state.generate_possible_actions();
+    assert_eq!(actor, 0);
+    for choice in &choices {
+        game.apply_action(choice);
+        game.set_state(state.clone());
+    }
+    assert!(!choices
+        .iter()
+        .any(|c| matches!(c.action, SimpleAction::UseAbility { .. })));
+
+    game.play_until_stable();
+    let state = game.get_state_clone();
+    assert_eq!(state.get_active(0).get_name(), "Bulbasaur");
+    // La habilidad no se uso: el Frogadier sigue en el mazo
     assert_eq!(state.decks[0].cards.len(), 1);
 }
