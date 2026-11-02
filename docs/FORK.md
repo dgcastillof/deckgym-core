@@ -54,6 +54,8 @@ lo manejan viven en tcgpocket (`scripts/README-deckgym.md`); aca solo estan los 
      PR bcollazo/deckgym-core#427).
    - Dragon's Blessing de Dragonair solo une al activo [N] (`fix/dragons-blessing`, step 2.4; PR
      bcollazo/deckgym-core#428).
+   - No ofrecer la habilidad de un Pokemon que queda KO al evolucionar (`fix/stale-ability-offer-on-knockout`,
+     paso 4.12; PR bcollazo/deckgym-core#442). En `work` es 97b3824, con los comentarios en castellano.
 6. **Modo cuestionario del visor** (`viewer/src/quiz/`, plugin `/quiz/` en `viewer/vite.config.ts`, step 3.6): muestra
    posiciones de `scripts/deckgym-quiz.mjs` de tcgpocket sin la jugada del bot y guarda las respuestas.
 
