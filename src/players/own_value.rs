@@ -42,6 +42,14 @@
 //   vienen: el bot evolucionaba Magneton a Magnezone apenas podia (pierde Volt Charge) y el usuario
 //   solo evoluciona al activo si lo salva o le sirve el ataque ya. Se reconoce por la mecanica del
 //   motor (AbilityMechanic), no por nombre de carta.
+// - `bench_generator` (step 3.14, partidas de Suicune ex + Baxcalibur contra el bot): por cada
+//   Pokemon de la banca con una habilidad que le une energia de la zona al activo de un tipo
+//   (Ice Maker, AttachEnergyFromZoneToActiveTypedPokemon) cuando el activo es de ese tipo, mio menos
+//   el del rival. Tambien cuenta la base de la banca que puede evolucionar a ese generador, con el
+//   peso de la forma (1 si la evolucion esta en la mano, `deck_evolution` si esta en el mazo).
+//   `generator` cuenta igual al generador de activo que en la banca, pero de activo solo se carga a
+//   si mismo y queda expuesto: p2 subia a Baxcalibur o a Frigibax para ganar un turno y el usuario
+//   pone adelante al atacante. Se reconoce por la mecanica del motor, no por nombre de carta.
 //
 // Las cartas en la mano solo se usan para el jugador desde cuyo punto de vista se evalua: la mano
 // rival es informacion oculta (para el rival cuentan las evoluciones de su mano y su mazo juntos,
@@ -106,6 +114,9 @@ pub struct PrepParams {
     /// Step 3.7: por cada Pokemon en juego que genera energia cada turno con su habilidad (ver
     /// [`energy_generators`]), mio menos el del rival.
     pub generator: f64,
+    /// Step 3.14: por cada generador de la banca que carga al activo de su tipo (ver
+    /// [`bench_generators`]), mio menos el del rival.
+    pub bench_generator: f64,
 }
 
 impl Default for PrepParams {
@@ -123,6 +134,7 @@ impl Default for PrepParams {
             reach_bench: 0.5,
             choices: false,
             generator: 0.0,
+            bench_generator: 0.0,
         }
     }
 }
@@ -168,6 +180,7 @@ pub fn prep_value_function(
         && prep.held == 0.0
         && prep.reach == 0.0
         && prep.generator == 0.0
+        && prep.bench_generator == 0.0
     {
         return parametric_value_function(state, myself, params);
     }
@@ -186,6 +199,18 @@ pub fn prep_value_function(
         + prep.held * (mine.held - theirs.held)
         + prep.reach * (mine.reach - theirs.reach)
         + prep.generator * (energy_generators(state, myself) - energy_generators(state, opponent))
+        + bench_generator_term(state, myself, prep)
+}
+
+/// `bench_generator` por su coeficiente (0 sin calcular nada si el coeficiente es 0)
+fn bench_generator_term(state: &State, myself: usize, prep: &PrepParams) -> f64 {
+    if prep.bench_generator == 0.0 {
+        return 0.0;
+    }
+    let opponent = (myself + 1) % 2;
+    prep.bench_generator
+        * (bench_generators(state, myself, myself, prep.deck_evolution)
+            - bench_generators(state, opponent, myself, prep.deck_evolution))
 }
 
 /// Cada termino de [`prep_value_function`] ya multiplicado por su coeficiente (suman el puntaje):
@@ -216,6 +241,7 @@ pub fn prep_value_breakdown(
             "prep_generator",
             prep.generator * (energy_generators(state, myself) - energy_generators(state, opponent)),
         ),
+        ("prep_bench_generator", bench_generator_term(state, myself, prep)),
     ]);
     terms
 }
@@ -238,6 +264,34 @@ pub(crate) fn energy_generators(state: &State, player: usize) -> f64 {
             _ => false,
         })
         .count() as f64
+}
+
+/// Generadores de la banca de `player` que le pueden unir energia de la zona al activo: los de
+/// `AttachEnergyFromZoneToActiveTypedPokemon` cuyo tipo es uno de los del activo. Cada uno pesa lo
+/// que su mejor forma generadora (ver [`forms`]): 1 si ya lo es o la evolucion esta en la mano
+/// propia, `deck_weight` si hay que robarla (y para el rival, que no muestra la mano). Sin activo
+/// (el armado) no cuenta nadie.
+pub(crate) fn bench_generators(state: &State, player: usize, viewer: usize, deck_weight: f64) -> f64 {
+    let Some(active) = state.maybe_get_active(player) else {
+        return 0.0;
+    };
+    let feeds_active = |card: &Card| {
+        matches!(
+            get_ability_mechanic(card),
+            Some(AbilityMechanic::AttachEnergyFromZoneToActiveTypedPokemon { energy_type })
+                if active.is_type(*energy_type)
+        )
+    };
+    state
+        .enumerate_bench_pokemon(player)
+        .map(|(_, pokemon)| {
+            forms(state, player, viewer, pokemon, deck_weight)
+                .into_iter()
+                .filter(|form| feeds_active(&form.card))
+                .map(|form| form.weight)
+                .fold(0.0, f64::max)
+        })
+        .sum()
 }
 
 /// Como [`loaded_prep_value_function`] con los coeficientes de otros archivos: el p<n> sombra del
@@ -1231,6 +1285,58 @@ pub(crate) mod tests {
             ..PrepParams::default()
         };
         assert_eq!(analyze(&board(true), 0, 0, &prep, &mut None).turns_to_win, 1.0);
+    }
+
+    /// Step 3.14: Chien-Pao ex (agua) y Baxcalibur (Ice Maker), uno de activo y el otro en la banca,
+    /// contra un Chansey; zona de agua
+    fn ice_maker_board(baxcalibur_in_front: bool) -> State {
+        let bax = PlayedCard::from_id(CardId::B2a036Baxcalibur);
+        let chien = PlayedCard::from_id(CardId::B2a037ChienPaoEx);
+        let mine = if baxcalibur_in_front { vec![bax, chien] } else { vec![chien, bax] };
+        let mut state = prep_state(mine, &[], vec![PlayedCard::from_id(CardId::A1202Chansey)]);
+        state.energy_zone[0].current = Some(EnergyType::Water);
+        state.decks[0].energy_types = vec![EnergyType::Water];
+        state
+    }
+
+    #[test]
+    fn bench_generator_counts_ice_maker_only_from_the_bench() {
+        assert_eq!(bench_generators(&ice_maker_board(false), 0, 0, 0.25), 1.0);
+        assert_eq!(bench_generators(&ice_maker_board(true), 0, 0, 0.25), 0.0);
+        // Con un activo de otro tipo no carga a nadie
+        let mut state = ice_maker_board(false);
+        state.in_play_pokemon[0][0] = Some(PlayedCard::from_id(CardId::B1206Furfrou));
+        assert_eq!(bench_generators(&state, 0, 0, 0.25), 0.0);
+        // Frigibax en la banca con Rare Candy y Baxcalibur en la mano cuenta entero
+        let mut state = ice_maker_board(false);
+        state.in_play_pokemon[0][1] = Some(PlayedCard::from_id(CardId::B2a034Frigibax));
+        state.hands[0] = vec![
+            get_card_by_enum(CardId::A3144RareCandy),
+            get_card_by_enum(CardId::B2a036Baxcalibur),
+        ];
+        assert_eq!(bench_generators(&state, 0, 0, 0.25), 1.0);
+    }
+
+    #[test]
+    fn bench_generator_puts_the_attacker_in_front() {
+        let value = |front: bool, coef: f64| {
+            let prep = PrepParams {
+                bench_generator: coef,
+                ..prep_params()
+            };
+            bench_generator_term(&ice_maker_board(front), 0, &prep)
+        };
+        assert!(value(false, 100.0) > value(true, 100.0));
+        // En 0 no cambia nada: es la funcion de valor de antes
+        let state = ice_maker_board(false);
+        let off = PrepParams {
+            bench_generator: 0.0,
+            ..prep_params()
+        };
+        assert_eq!(
+            prep_value_function(&state, 0, &step_2_2_params(), &off),
+            prep_value_function(&state, 0, &step_2_2_params(), &prep_params())
+        );
     }
 
     #[test]
