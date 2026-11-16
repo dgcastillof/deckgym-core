@@ -414,12 +414,8 @@ impl State {
 
     pub(crate) fn end_turn_maintenance(&mut self) {
         // Maintain PlayedCard state for _all_ players
-        for i in 0..2 {
-            self.in_play_pokemon[i].iter_mut().for_each(|x| {
-                if let Some(played_card) = x {
-                    played_card.end_turn_maintenance();
-                }
-            });
+        for played_card in self.in_play_pokemon.iter_mut().flatten().flatten() {
+            played_card.end_turn_maintenance();
         }
 
         self.has_played_support = false;
@@ -597,7 +593,8 @@ impl State {
     /// What counts as an "effect": the Special Conditions and the `CardEffect`s an attack imposes
     /// on the targeted Pokémon — the two channels every attack uses to place something *on* a
     /// Pokémon, i.e. `apply_status_condition` and `add_effect_to_in_play` — plus discarding
-    /// Energy from it (`discard_from_opponent_active` in `apply_attack_action`). Damage, and the
+    /// Energy from it (`discard_from_opponent_active`, and the random pick of
+    /// `discard_random_global_energy_attack`, both in `apply_attack_action`). Damage, and the
     /// Knock Out that may follow from it, are explicitly *not* effects, so a shielded Pokémon
     /// still takes full damage and can still be Knocked Out.
     ///

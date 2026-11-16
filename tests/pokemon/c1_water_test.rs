@@ -224,11 +224,10 @@ fn test_frogadier_sudden_duplication_does_nothing_without_frogadier_in_deck() {
     assert_eq!(state.decks[0].cards.len(), 1);
 }
 
-/// Paso 4.12: Froakie sigue vivo solo por los +20 de Starting Plains (a los Basicos). Al evolucionar
-/// pierde el bono y el Frogadier entra con 0 HP: el chequeo de KO lo saca de juego despues de que
-/// `on_evolve` encolo Sudden Duplication. La oferta no puede quedar apuntando al lugar vacio: los
-/// bots que pronostican todas las opciones entraban en panico con
-/// "Pokemon should be there if using ability".
+/// Froakie survives only thanks to Starting Plains' +20 HP to Basic Pokémon. Evolving loses the
+/// bonus, so Frogadier comes into play with 0 HP and the K.O. check removes it after `on_evolve`
+/// queued Sudden Duplication. The offer must not keep pointing at the empty slot: players that
+/// forecast every option panicked with "Pokemon should be there if using ability".
 #[test]
 fn test_frogadier_knocked_out_by_evolving_does_not_offer_sudden_duplication() {
     let mut game = get_test_game_with_board(
@@ -254,7 +253,7 @@ fn test_frogadier_knocked_out_by_evolving_does_not_offer_sudden_duplication() {
         },
         is_stack: false,
     });
-    // Froakie: 60 + 20 de Starting Plains. Frogadier: 70, sin bono
+    // Froakie: 60 + 20 from Starting Plains. Frogadier: 70, no bonus
     game.apply_action(&Action {
         actor: 1,
         action: SimpleAction::ApplyDamage {
@@ -280,7 +279,7 @@ fn test_frogadier_knocked_out_by_evolving_does_not_offer_sudden_duplication() {
     assert!(state.in_play_pokemon[0][0].is_none());
     assert_eq!(state.points, [0, 1]);
 
-    // Como el jugador v, que pronostica cada opcion antes de elegir: todas tienen que poder resolverse
+    // Like a player that forecasts each option before choosing: all of them must resolve
     let (actor, choices) = state.generate_possible_actions();
     assert_eq!(actor, 0);
     for choice in &choices {
@@ -294,6 +293,6 @@ fn test_frogadier_knocked_out_by_evolving_does_not_offer_sudden_duplication() {
     game.play_until_stable();
     let state = game.get_state_clone();
     assert_eq!(state.get_active(0).get_name(), "Bulbasaur");
-    // La habilidad no se uso: el Frogadier sigue en el mazo
+    // The Ability was not used: the other Frogadier is still in the deck
     assert_eq!(state.decks[0].cards.len(), 1);
 }

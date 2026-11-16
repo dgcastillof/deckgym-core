@@ -406,8 +406,8 @@ fn apply_snowy_terrain_checkup_damage(state: &mut State) {
     let mut active_only_damage: Vec<(usize, u32)> = vec![];
     let mut all_opponent_damage: Vec<(usize, u32)> = vec![];
 
-    for player in 0..2 {
-        let Some(active) = state.in_play_pokemon[player][0].as_ref() else {
+    for (player, slots) in state.in_play_pokemon.iter().enumerate() {
+        let Some(active) = slots[0].as_ref() else {
             continue;
         };
         if active.is_knocked_out() {
@@ -1063,9 +1063,10 @@ pub(crate) fn handle_knockouts(
     // Losing an HP aura can knock out a Benched Pokemon after an earlier
     // knockout already queued promotion choices. Never offer a now-empty slot:
     // activating it would leave the Active Spot empty after the stack resolves.
-    // Lo mismo con una habilidad ofrecida (paso 4.12): Frogadier evoluciona con el dano de un
-    // Basico que vivia por Starting Plains, muere y su Sudden Duplication queda en la pila. El
-    // Noop de la oferta se conserva: en Victory Star es lo que resuelve el ataque en espera.
+    // The same goes for an offered Ability: a Basic kept alive only by Starting Plains
+    // loses the bonus when it evolves, so the evolution can be knocked out with its
+    // on-evolve offer still on the stack. The offer's Noop stays: on a Victory Star
+    // offer, it is what resolves the pending attack.
     let occupied = state
         .in_play_pokemon
         .each_ref()
