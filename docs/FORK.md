@@ -60,7 +60,9 @@ lo manejan viven en tcgpocket (`scripts/README-deckgym.md`); aca solo estan los 
 Merge del 2026-11-16 (paso 3.16 de tcgpocket, `03fff78`): `upstream/main` en a0f9d14 (#440 Clear Veil, #441
 Misty, Sweet Honey y Nightmare Aura de Darkrai ex, #442, #443 aura sin activo rival). Conflictos solo de
 comentarios del 4.12. `card_status`: 4577 cartas, 0 incompletas. El exe se compilo aparte en `target/step-3-16/`
-(sha256 `4fb9173f5e19`); `target/release` sigue siendo `093d235308f2` hasta que tcgpocket decida adoptarlo (riesgo K9).
+(sha256 `4fb9173f5e19`) y el 16/11 tcgpocket lo adopto para lo nuevo: `target/release/deckgym.exe` es ese exe. El
+anterior (`093d235308f2`, build de 210ddf4) quedo en `target/exe-093d2353/deckgym.exe`; lo publicado conserva su
+`engineCommit` hasta la proxima expansion. Partida a partida dan lo mismo en el top 20 (`benchmarks/motor-2026-11.json`).
 6. **Modo cuestionario del visor** (`viewer/src/quiz/`, plugin `/quiz/` en `viewer/vite.config.ts`, step 3.6): muestra
    posiciones de `scripts/deckgym-quiz.mjs` de tcgpocket sin la jugada del bot y guarda las respuestas.
 
