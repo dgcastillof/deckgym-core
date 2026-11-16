@@ -46,8 +46,8 @@ lo manejan viven en tcgpocket (`scripts/README-deckgym.md`); aca solo estan los 
    guardan en `scores` (step 3.6). Desde el step 3.14, p<n> tiene el termino `bench_generator` (`own_value.rs`): los
    generadores de la banca que le unen energia de la zona al activo de su tipo (`AttachEnergyFromZoneToActiveTypedPokemon`,
    Ice Maker), con su base por evolucionar. En 0 en el titular (`prep-8-2.json`); `value_params/prep-3-14-bgen-*.json`
-   lo prueban con 300, 600 y 1200. Se compilo aparte en `target/step-3-14/` (CARGO_TARGET_DIR): `target/release` sigue
-   siendo el exe 093d235308f2.
+   lo prueban con 300, 600 y 1200. Se compilo aparte en `target/step-3-14/` (CARGO_TARGET_DIR). Desde el 3.16 el termino esta en `target/release` (ver abajo); hasta
+   ahi era el exe 093d235308f2.
 4. **Tests de auditoria de cartas** (`tests/pokemon/meta_audit_*_test.rs`, step 2.5): las 56 cartas de
    los mazos que el benchmark mas desvia; los `#[ignore = "BUG: ..."]` son bugs conocidos (desde el step
    2.4 queda solo Thieving Incisors, simplificacion a proposito). Resultado en `docs/cartas-sospechosas.md`
