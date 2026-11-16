@@ -86,6 +86,12 @@ enum Commands {
         /// task statistics. Only with a single opponent deck file.
         #[arg(long)]
         stats_json: Option<String>,
+
+        /// Write the value-function features of every decision position (from the deciding
+        /// player's point of view) and the game's result to this JSON lines file, to learn a value
+        /// function from self-play (src/value_dataset.rs). Only with a single opponent deck file.
+        #[arg(long)]
+        value_dataset: Option<String>,
     },
     /// Play exactly one game and print a URL to open it in the web viewer (see viewer/). A thin
     /// wrapper around `simulate`'s replay-recording path, for the common "play one game, look at
@@ -335,6 +341,7 @@ fn main() {
             bot_b,
             bot_timeout_ms,
             stats_json,
+            value_dataset,
         } => {
             initialize_logger(verbose);
 
@@ -342,7 +349,26 @@ fn main() {
 
             // Check if deck_b_or_folder is a directory
             let path = std::path::Path::new(&deck_b_or_folder);
-            if let Some(stats_path) = stats_json {
+            if let Some(dataset_path) = value_dataset {
+                if path.is_dir() || stats_json.is_some() {
+                    eprintln!("--value-dataset needs a single opponent deck file and no --stats-json");
+                    std::process::exit(2);
+                }
+                deckgym::value_dataset::simulate_value_dataset(
+                    &deck_a,
+                    &deck_b_or_folder,
+                    fill_code_array(players),
+                    num,
+                    seed,
+                    ParallelConfig {
+                        enabled: parallel,
+                        num_threads: threads,
+                    },
+                    &dataset_path,
+                )
+                .expect("Failed to run simulation");
+                warn!("Value dataset written to {dataset_path}");
+            } else if let Some(stats_path) = stats_json {
                 if path.is_dir() {
                     eprintln!("--stats-json needs a single opponent deck file, not a folder");
                     std::process::exit(2);

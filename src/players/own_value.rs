@@ -334,10 +334,10 @@ pub(crate) struct Outlook {
 /// Una forma a la que puede llegar un Pokemon en juego: la carta, en cuantos turnos propios puede
 /// evolucionar a ella (0 = ya la tiene) y el peso (1 si es segura, `deck_evolution` si hay que
 /// robarla)
-struct Form {
-    card: Card,
-    evolve_turns: usize,
-    weight: f64,
+pub(crate) struct Form {
+    pub(crate) card: Card,
+    pub(crate) evolve_turns: usize,
+    pub(crate) weight: f64,
 }
 
 /// Una amenaza para `turns_to_win`: el Pokemon de `idx` con `form`, que ataca con `attack` (con la
@@ -564,7 +564,7 @@ fn card_hp(card: &Card) -> f64 {
 }
 
 /// Tipos de energia que genera la zona de `player`
-fn zone_of(state: &State, player: usize) -> Vec<EnergyType> {
+pub(crate) fn zone_of(state: &State, player: usize) -> Vec<EnergyType> {
     let mut zone: Vec<EnergyType> = state.decks[player].energy_types().to_vec();
     zone.sort();
     zone.dedup();
@@ -695,7 +695,7 @@ fn turns_to_win(
 /// evoluciones salen de la mano y el mazo juntos, con peso `deck_weight`. La legalidad se le
 /// pregunta al motor (`can_evolve_into`, `can_rare_candy_evolve`); que el Pokemon haya entrado este
 /// turno no importa, porque evoluciona el turno que viene.
-fn forms(
+pub(crate) fn forms(
     state: &State,
     player: usize,
     viewer: usize,
@@ -760,7 +760,7 @@ fn forms(
 
 /// La energia de la zona que paga `missing` (lo que devuelve `energy_missing`): los tipos tal cual
 /// y los incoloros con el primer tipo de la zona. None si falta un tipo que la zona no genera.
-fn fill_from_zone(missing: &[EnergyType], zone: &[EnergyType]) -> Option<Vec<EnergyType>> {
+pub(crate) fn fill_from_zone(missing: &[EnergyType], zone: &[EnergyType]) -> Option<Vec<EnergyType>> {
     let mut fill = Vec::with_capacity(missing.len());
     for energy in missing {
         if *energy == EnergyType::Colorless {

@@ -65,6 +65,17 @@ anterior (`093d235308f2`, build de 210ddf4) quedo en `target/exe-093d2353/deckgy
 `engineCommit` hasta la proxima expansion. Partida a partida dan lo mismo en el top 20 (`benchmarks/motor-2026-11.json`).
 6. **Modo cuestionario del visor** (`viewer/src/quiz/`, plugin `/quiz/` en `viewer/vite.config.ts`, step 3.6): muestra
    posiciones de `scripts/deckgym-quiz.mjs` de tcgpocket sin la jugada del bot y guarda las respuestas.
+7. **Valor aprendido** (paso 3.5 de tcgpocket): `simulate --value-dataset <archivo.jsonl>` (`src/value_dataset.rs`)
+   vuelca, por cada posicion en la que alguien decide, las features de la funcion de valor de p2 desde quien decide
+   (cada termino de `prep_value_breakdown` con coeficiente 1, mas cuatro de armado) y el resultado de la partida. Solo
+   lee el estado: con la misma semilla las partidas salen iguales con y sin volcado. El jugador `l<n>`
+   (`src/players/own_learned.rs`) es t<n> con la funcion de valor de `DECKGYM_PREP_LEARNED_PARAMS` (`value`, `prep` y
+   `armado` en un JSON), para jugar el aprendido contra el titular en la misma partida. Las features de armado (atacante
+   principal = la carta con el ataque impreso mas fuerte): turnos hasta que puede atacar, Pokemon de su linea en juego,
+   piezas de la linea en la mano (y Rare Candy si es fase 2) y energia del mas cargado de la linea. De `own_value.rs` solo
+   se abrieron `forms`, `fill_from_zone` y `zone_of` a `pub(crate)`. Lo entrena `scripts/deckgym-learn-value.mjs` de
+   tcgpocket, que escribe `value_params/learned-3-5.json`. Se compilo aparte en `target/step-3-5/`; p2 da las mismas
+   partidas que con `target/release`.
 
 ## Estrategia y reglas del fork
 

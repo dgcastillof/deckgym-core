@@ -5,6 +5,7 @@ mod expectiminimax_player;
 mod external_player;
 mod human_player;
 mod mcts_player;
+pub mod own_learned;
 mod own_reply_player;
 mod own_turn_player;
 mod own_two_turn_player;
@@ -91,6 +92,10 @@ pub enum PlayerCode {
     D {
         max_depth: usize,
     },
+    /// t<max_depth> con la funcion de valor aprendida (`DECKGYM_PREP_LEARNED_PARAMS`, paso 3.5)
+    L {
+        max_depth: usize,
+    },
     /// An external bot, spoken to over stdin/stdout (see `docs/bot-protocol.md`). The command to
     /// run comes from `--bot-a`/`--bot-b`, not from the code itself — `create_players` panics if
     /// asked to build an `X` player; use `create_players_with_bots`.
@@ -116,6 +121,7 @@ pub fn parse_player_code(s: &str) -> Result<PlayerCode, String> {
         "t" => return Ok(PlayerCode::T { max_depth: 2 }),
         "p" => return Ok(PlayerCode::P { max_depth: 2 }),
         "d" => return Ok(PlayerCode::D { max_depth: 2 }),
+        "l" => return Ok(PlayerCode::L { max_depth: 2 }),
         _ => {}
     }
 
@@ -147,6 +153,13 @@ pub fn parse_player_code(s: &str) -> Result<PlayerCode, String> {
             return Ok(PlayerCode::D { max_depth });
         }
         return Err(format!("Invalid player code: {s}. Use 'd<number>' for TwoTurn with depth, e.g., 'd2'"));
+    }
+
+    if let Some(rest) = lower.strip_prefix('l') {
+        if let Ok(max_depth) = rest.parse::<usize>() {
+            return Ok(PlayerCode::L { max_depth });
+        }
+        return Err(format!("Invalid player code: {s}. Use 'l<number>' for TurnCompletion with the learned value function, e.g., 'l2'"));
     }
 
     // 'e' followed by digits (e.g., e2, e4) is ExpectiMiniMax with that depth
@@ -233,6 +246,11 @@ fn get_player(deck: Deck, player: &PlayerCode) -> Box<dyn Player> {
             deck,
             *max_depth,
             Box::new(own_value::loaded_prep_value_function),
+        )),
+        PlayerCode::L { max_depth } => Box::new(TurnCompletionPlayer::with_value_function(
+            deck,
+            *max_depth,
+            Box::new(own_learned::loaded_learned_value_function),
         )),
         PlayerCode::D { max_depth } => Box::new(TwoTurnPlayer::new(
             deck,

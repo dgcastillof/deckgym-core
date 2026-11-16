@@ -1,0 +1,52 @@
+{
+  "value": {
+    "active_damage": 5.2953864,
+    "active_has_tool": 13.538904,
+    "active_pokemon_online_score": 166.22027,
+    "active_retreat_cost": -22.444729,
+    "active_safety": -1.4598084,
+    "active_status": 356.61404,
+    "attached_energy": -61.799105,
+    "bench_count": -18.37914,
+    "bench_hp": 0.012013657,
+    "bench_online": 49.22598,
+    "can_ko_active": 32.741455,
+    "deck_size": 48.60722,
+    "energy_damage": 0.92482831,
+    "energy_damage_bench": 0.5,
+    "energy_distance_to_online": -38.117157,
+    "evolution_stage": 114.65654,
+    "evolutions_in_hand": 139.09409,
+    "hand_size": 13.0213,
+    "is_winner": 100000,
+    "online_pokemon_count": -46.608773,
+    "opponent_discard_size": 72.410293,
+    "points": 630.59505,
+    "pokemon_value": 1.3143944,
+    "pokemon_value_energy": true,
+    "real_damage": true,
+    "status_damage": 8.8533426,
+    "turns_until_opponent_wins": 0
+  },
+  "prep": {
+    "bench": 1,
+    "bench_generator": 176.30599,
+    "choices": true,
+    "deck_evolution": 0.25,
+    "generator": -174.77477,
+    "held": 4.2833004,
+    "lock": -1.1874229,
+    "max_turns": 3,
+    "prep_damage": 0.392426,
+    "reach": 117.81177,
+    "reach_bench": 0.5,
+    "turn_discount": 0.5,
+    "turns_to_win": 6.6672024
+  },
+  "armado": {
+    "ready_turns": 41.358033,
+    "line_board": 4.2769582,
+    "line_hand": 20.821785,
+    "attacker_energy": 59.347278
+  }
+}
