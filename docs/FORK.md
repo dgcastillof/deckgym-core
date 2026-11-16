@@ -53,13 +53,14 @@ lo manejan viven en tcgpocket (`scripts/README-deckgym.md`); aca solo estan los 
    2.4 queda solo Thieving Incisors, simplificacion a proposito). Resultado en `docs/cartas-sospechosas.md`
    de tcgpocket.
 5. **Arreglos mandados upstream y todavia no integrados**, un commit cada uno, que se descartan en el
-   rebase cuando upstream los trae:
-   - Clear Veil / Crystal Body evitan el descarte de energia por ataques rivales (`fix/clear-veil`,
-     PR bcollazo/deckgym-core#427).
-   - Dragon's Blessing de Dragonair solo une al activo [N] (`fix/dragons-blessing`, step 2.4; PR
-     bcollazo/deckgym-core#428).
-   - No ofrecer la habilidad de un Pokemon que queda KO al evolucionar (`fix/stale-ability-offer-on-knockout`,
-     paso 4.12; PR bcollazo/deckgym-core#442). En `work` es 97b3824, con los comentarios en castellano.
+   rebase cuando upstream los trae. Hoy no queda ninguno: ya estan en upstream Clear Veil / Crystal Body
+   (#427, y su continuacion #440 para el descarte al azar de todos los Pokemon), Dragon's Blessing (#428) y
+   el arreglo del 4.12 (#442; en `work` era 97b3824, y en el merge del 3.16 quedo el texto de upstream).
+
+Merge del 2026-11-16 (paso 3.16 de tcgpocket, `03fff78`): `upstream/main` en a0f9d14 (#440 Clear Veil, #441
+Misty, Sweet Honey y Nightmare Aura de Darkrai ex, #442, #443 aura sin activo rival). Conflictos solo de
+comentarios del 4.12. `card_status`: 4577 cartas, 0 incompletas. El exe se compilo aparte en `target/step-3-16/`
+(sha256 `4fb9173f5e19`); `target/release` sigue siendo `093d235308f2` hasta que tcgpocket decida adoptarlo (riesgo K9).
 6. **Modo cuestionario del visor** (`viewer/src/quiz/`, plugin `/quiz/` en `viewer/vite.config.ts`, step 3.6): muestra
    posiciones de `scripts/deckgym-quiz.mjs` de tcgpocket sin la jugada del bot y guarda las respuestas.
 
@@ -109,6 +110,11 @@ con `git show <commit>`. Despues de un rebase hay que recompilar (~8 min) y corr
 humo de tcgpocket: `node scripts/simulate-events.mjs --event garchomp --num 20` (restaurar luego
 `public/events/sim.json` con `git checkout`) y
 `node scripts/deckgym-calibrate.mjs --top 4 --players v,v --num 20 --params ../deckgym-core/value_params/best.json`.
+
+Desde el 29/10 `work` se sincroniza con merge (`git merge upstream/main`), no con rebase: tiene merges propios
+(`play-human`) y esta pusheada, asi que reescribirla rompe los commits que cita tcgpocket (`engineCommit`). Los
+tests van sin `--release` (con `--release` se vuelve a linkear `target/release` y cambia su sha) y el exe nuevo se
+compila en un target aparte (`CARGO_TARGET_DIR=target/<paso>`) hasta que tcgpocket lo adopte.
 
 ## Que se podria mandar a upstream
 
